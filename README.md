@@ -49,7 +49,8 @@ Install into `...\How to Fish\BepInEx\plugins\` together with CrossMC's `CrossMC
 - Frame: reads the newest Minecraft frame from shared memory and draws it as a screen rectangle.
 - State: publishes the host player/camera (`HostState`).
 - Collision: publishes host world collider AABBs so Minecraft can build collision proxies.
-- Entities: publishes host creatures (stable `NetworkObject.ObjectId`) as proxy entities.
+- Entities: publishes host creatures with a stable CrossMC `CrossEntityId` (mapped from the
+  host-native `NetworkObject.ObjectId`) as proxy entities.
 - Damage: consumes Minecraft's native damage events and applies `host.properties` multipliers to
   the mapped host entity / local player.
 

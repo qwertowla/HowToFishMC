@@ -38,7 +38,12 @@ namespace CrossMC.HowToFish
         private readonly UnityEngine.Collider[] _overlapBuffer = new UnityEngine.Collider[512];
         private readonly List<BridgeCollider> _colliders = new List<BridgeCollider>();
         private readonly List<EntityMap> _entities = new List<EntityMap>();
-        private readonly Dictionary<int, Creature> _hostCreatures = new Dictionary<int, Creature>();
+
+        // Stable CrossEntityId allocation: host-native id -> CrossEntityId (kept for the session),
+        // and the current CrossEntityId -> host creature binding (a lookup query).
+        private readonly Dictionary<int, int> _hostToCross = new Dictionary<int, int>();
+        private readonly Dictionary<int, Creature> _crossToCreature = new Dictionary<int, Creature>();
+        private int _nextCrossId = 1000;
 
         private void Awake()
         {
@@ -192,7 +197,7 @@ namespace CrossMC.HowToFish
 
             Vector3 center = player.Transform.position;
             _entities.Clear();
-            _hostCreatures.Clear();
+            _crossToCreature.Clear();
 
             Creature boss = BossManager.Boss;
             Creature[] creatures = UnityEngine.Object.FindObjectsByType<Creature>(FindObjectsInactive.Exclude);
@@ -216,11 +221,18 @@ namespace CrossMC.HowToFish
                     continue;
                 }
 
+                if (!_hostToCross.TryGetValue(hostId, out int crossId))
+                {
+                    crossId = ++_nextCrossId;
+                    _hostToCross[hostId] = crossId;
+                }
+
                 Vector3 p = _mapper.ToMc(creature.transform.position);
                 bool isBoss = boss == creature;
                 _entities.Add(new EntityMap
                 {
                     HostEntityId = hostId,
+                    CrossEntityId = crossId,
                     Kind = isBoss ? BridgeProtocol.EntityBoss : BridgeProtocol.EntityCreature,
                     Flags = isBoss ? BridgeProtocol.EntityBossFlag : 0,
                     X = p.x,
@@ -230,7 +242,7 @@ namespace CrossMC.HowToFish
                     Health = creature.Hp,
                     MaxHealth = creature.MaxHp,
                 });
-                _hostCreatures[hostId] = creature;
+                _crossToCreature[crossId] = creature;
 
                 if (_entities.Count >= BridgeProtocol.EntityCapacity)
                 {
@@ -254,20 +266,20 @@ namespace CrossMC.HowToFish
 
                 float multiplier = _config.DamageMultiplier(d.SourceType);
                 int scaled = Mathf.Max(0, Mathf.RoundToInt(d.Amount * multiplier));
-                Logger.LogInfo("CrossMC damage: hostEntity=" + d.HostEntityId + " mc=" + d.McEntityId
+                Logger.LogInfo("CrossMC damage: cross=" + d.CrossEntityId + " mc=" + d.McEntityId
                         + " type=" + d.SourceType + " raw=" + d.Amount + " x" + multiplier + " => " + scaled);
-                ApplyToHostEntity(d.HostEntityId, scaled, d);
+                ApplyToHostEntity(d.CrossEntityId, scaled, d);
             }
         }
 
-        private void ApplyToHostEntity(int hostId, int amount, DamageEvent d)
+        private void ApplyToHostEntity(int crossId, int amount, DamageEvent d)
         {
             if (amount <= 0)
             {
                 return;
             }
 
-            if (_hostCreatures.TryGetValue(hostId, out Creature creature) && creature != null)
+            if (_crossToCreature.TryGetValue(crossId, out Creature creature) && creature != null)
             {
                 ApplyCreatureDamage(creature, amount, d);
                 return;
