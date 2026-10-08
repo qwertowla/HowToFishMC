@@ -31,6 +31,12 @@ namespace CrossMC.HowToFish
         public float OverlayWidth = 0.35f;
         public float OverlayHeight = 0.35f;
 
+        // Player control flow: Minecraft is authoritative. The host only (a) captures input and
+        // (b) follows the Minecraft player. Both are host-side toggles.
+        public bool InputCapture = true;
+        public bool PlayerFollow;
+        public bool PlayerFollowRotation;
+
         public static HostConfig Load()
         {
             var cfg = new HostConfig();
@@ -75,6 +81,10 @@ namespace CrossMC.HowToFish
             cfg.OverlayY = cfg.GetFloat("overlay.y", 0.05f);
             cfg.OverlayWidth = cfg.GetFloat("overlay.width", 0.35f);
             cfg.OverlayHeight = cfg.GetFloat("overlay.height", 0.35f);
+
+            cfg.InputCapture = cfg.GetBool("input.capture", true);
+            cfg.PlayerFollow = cfg.GetBool("player.follow", false);
+            cfg.PlayerFollowRotation = cfg.GetBool("player.followRotation", false);
             return cfg;
         }
 
@@ -167,6 +177,18 @@ namespace CrossMC.HowToFish
             }
 
             return new Vector3(x, y, z);
+        }
+
+        /// <summary>Inverse of <see cref="ToMc"/>: Minecraft world space -> host world space.</summary>
+        public Vector3 ToHost(Vector3 mc)
+        {
+            float scale = _cfg.Scale == 0f ? 1f : _cfg.Scale;
+            float x = _cfg.FlipX ? -mc.x : mc.x;
+
+            return new Vector3(
+                    x / scale + _cfg.OriginX,
+                    mc.y / scale + _cfg.OriginY,
+                    mc.z / scale + _cfg.OriginZ);
         }
     }
 }

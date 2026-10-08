@@ -45,12 +45,27 @@ dotnet build -c Release
 ## 功能
 
 - **画面**——从共享内存读取最新的 Minecraft 帧，作为屏幕矩形绘制。
-- **状态**——发布宿主玩家 / 相机为 `HostState`。
+- **环境**——发布宿主环境 / 表现为 `HostState`（视口、相机模式；仅信息性——玩家权威在 Minecraft）。
+- **输入**——用 Unity Input System 采集键鼠，经 CrossMC `InputRing` 转发给 Minecraft（`input.capture`）。
+- **跟随**——（可选的 `player.follow`）通过 `CoordinateMapper` 让 How to Fish 玩家跟随权威的 Minecraft
+  玩家（`McState`）。
 - **碰撞**——发布宿主世界的 Collider AABB，供 Minecraft 构建碰撞代理。
 - **实体**——发布宿主生物，带稳定的 CrossMC **`CrossEntityId`**（由宿主的 `NetworkObject.ObjectId` 映射），
   Minecraft 据此生成代理实体。
 - **伤害**——消费 Minecraft 的原生伤害事件（以 `CrossEntityId` 为键），按 `host.properties` 的倍率作用于
   对应宿主实体 / 本地玩家。
+
+## 玩家权威
+
+**Minecraft 玩家是权威。** 宿主只负责采集输入并跟随结果，绝不移动 Minecraft 玩家：
+
+```text
+宿主键鼠 ─▶ InputRing ─▶ Minecraft ─▶ Minecraft 玩家 ─▶ McState ─▶ 宿主玩家（跟随）
+```
+
+- 宿主 Transform **绝不**回写 Minecraft 玩家（`HostState` 的位置只是信息性）。
+- 宿主不拥有移动/碰撞权威：最终状态由 Minecraft 决定，包括与宿主代理的碰撞。
+- 视角控制必须走输入（鼠标 delta），不要用 `HostState.yaw/pitch`。
 
 ## 配置（`host.properties`）
 

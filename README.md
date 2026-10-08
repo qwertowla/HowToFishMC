@@ -49,12 +49,32 @@ Install into `...\How to Fish\BepInEx\plugins\` together with CrossMC's `CrossMC
 ## What it does
 
 - **Frame** — reads the newest Minecraft frame from shared memory and draws it as a screen rectangle.
-- **State** — publishes the host player/camera as `HostState`.
+- **Environment** — publishes the host environment/avatar as `HostState` (viewport, camera mode;
+  informational only — Minecraft is authoritative for the player).
+- **Input** — captures keyboard/mouse with the Unity Input System and forwards them to Minecraft
+  through the CrossMC `InputRing` (`input.capture`).
+- **Follow** — (opt-in, `player.follow`) drives the How to Fish player to follow the authoritative
+  Minecraft player (`McState`) through the `CoordinateMapper`.
 - **Collision** — publishes host world collider AABBs so Minecraft can build collision proxies.
 - **Entities** — publishes host creatures with a stable CrossMC **`CrossEntityId`** (mapped from the
   host-native `NetworkObject.ObjectId`) so Minecraft can spawn proxy entities.
 - **Damage** — consumes Minecraft's native damage events (keyed by `CrossEntityId`) and applies
   `host.properties` multipliers to the mapped host entity / local player.
+
+## Player authority
+
+**The Minecraft player is authoritative.** The host only captures input and follows the result; it
+never moves the Minecraft player:
+
+```text
+host keyboard/mouse ─▶ InputRing ─▶ Minecraft ─▶ Minecraft player ─▶ McState ─▶ host player (follows)
+```
+
+- The host transform is **never** written back onto the Minecraft player (`HostState` position is
+  informational).
+- Host movement/collision is not authoritative: Minecraft decides the final state, including
+  collisions with host proxies.
+- View control must go through input (mouse delta), not `HostState.yaw/pitch`.
 
 ## Configuration (`host.properties`)
 

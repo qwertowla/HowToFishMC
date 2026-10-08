@@ -4,11 +4,15 @@ using System.Diagnostics;
 using System.Reflection;
 using BepInEx;
 using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.Controls;
 using BridgeMemory = CrossMC.Bridge.BridgeMemory;
 using BridgeProtocol = CrossMC.Bridge.Protocol;
 using HostState = CrossMC.Bridge.HostState;
+using McState = CrossMC.Bridge.McState;
 using EntityMap = CrossMC.Bridge.EntityMap;
 using DamageEvent = CrossMC.Bridge.DamageEvent;
+using InputEvent = CrossMC.Bridge.InputEvent;
 using BridgeCollider = CrossMC.Bridge.Collider;
 
 namespace CrossMC.HowToFish
@@ -16,9 +20,14 @@ namespace CrossMC.HowToFish
     /// <summary>
     /// CrossMC host adapter for <i>How to Fish</i>.
     ///
-    /// <p>Reads Minecraft's frame (overlay), publishes the host player/camera and the host world
-    /// colliders/creatures into CrossMC, and applies Minecraft's damage events to the real host
-    /// entities using this adapter's configured multipliers.</p>
+    /// <p><b>Player authority:</b> the Minecraft player is the primary player. This adapter only
+    /// (a) captures keyboard/mouse into the CrossMC <c>InputRing</c>, (b) publishes the host
+    /// environment + host world (colliders/entities) and (c) — when enabled — drives the How to Fish
+    /// player to <b>follow</b> the authoritative <c>McState</c>. It never pushes a host transform
+    /// back onto the Minecraft player.</p>
+    ///
+    /// <p>Reads Minecraft's frame (overlay), publishes host environment/world, applies Minecraft's
+    /// damage events with this adapter's configured multipliers.</p>
     ///
     /// <p>All game access runs on the Unity main thread (Update/OnGUI). Only the shared-memory
     /// reads/writes are thread-agnostic.</p>
@@ -90,7 +99,13 @@ namespace CrossMC.HowToFish
             }
 
             _memory.WriteHostHeartbeat(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-            PublishPlayer();
+            PublishHostEnvironment();
+
+            // Host -> Minecraft: capture keyboard/mouse and forward as InputRing events.
+            CaptureInput();
+
+            // Minecraft -> host: make the How to Fish player follow the authoritative McState.
+            FollowMcPlayer();
 
             float dt = Time.deltaTime;
             _colliderTimer -= dt;
@@ -112,8 +127,136 @@ namespace CrossMC.HowToFish
             ApplyDamage();
         }
 
-        private void PublishPlayer()
+        /// <summary>
+        /// Publishes the host's OWN environment/avatar as <c>HostState</c>. This is informational
+        /// only: the Minecraft player is authoritative and this is never used to drive it. The host
+        /// -> Minecraft player channel is <c>InputRing</c> (see <see cref="CaptureInput"/>).
+        /// </summary>
+        private void PublishHostEnvironment()
         {
+            Player player = Player.LocalPlayer;
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var state = new HostState
+            {
+                Flags = 1, // in game
+                TimestampMs = now,
+                UnitsPerBlock = 1f / Mathf.Max(0.0001f, _config.Scale),
+                ViewportW = Screen.width,
+                ViewportH = Screen.height,
+            };
+
+            // Informational host avatar/camera (NOT authority for the Minecraft player).
+            if (player && player.Transform)
+            {
+                Vector3 pos = _mapper.ToMc(player.Transform.position);
+                Vector3 rot = player.CamObject ? player.CamObject.eulerAngles : Vector3.zero;
+                state.PosX = pos.x;
+                state.PosY = pos.y;
+                state.PosZ = pos.z;
+                state.Yaw = rot.y;
+                state.Pitch = rot.x;
+                state.Roll = rot.z;
+                state.EyeHeight = 1.62f;
+            }
+
+            _memory.WriteHostState(state);
+        }
+
+        /// <summary>
+        /// Host -> Minecraft player channel: capture keyboard/mouse with the Unity Input System and
+        /// push CrossMC input events. Minecraft interprets them with its own rules; the host never
+        /// moves the Minecraft player directly.
+        /// </summary>
+        private void CaptureInput()
+        {
+            if (!_config.InputCapture)
+            {
+                return;
+            }
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            Keyboard keyboard = Keyboard.current;
+
+            if (keyboard != null)
+            {
+                var keys = keyboard.allKeys;
+
+                for (int i = 0; i < keys.Count; i++)
+                {
+                    KeyControl key = keys[i];
+
+                    if (key.wasPressedThisFrame)
+                    {
+                        PushInput(BridgeProtocol.InputKeyDown, (int)key.keyCode, 0, 0, now);
+                    }
+                    else if (key.wasReleasedThisFrame)
+                    {
+                        PushInput(BridgeProtocol.InputKeyUp, (int)key.keyCode, 0, 0, now);
+                    }
+                }
+            }
+
+            Mouse mouse = Mouse.current;
+
+            if (mouse != null)
+            {
+                MouseButton(mouse.leftButton, 0, now);
+                MouseButton(mouse.rightButton, 1, now);
+                MouseButton(mouse.middleButton, 2, now);
+
+                Vector2 delta = mouse.delta.ReadValue();
+
+                if (delta.x != 0f || delta.y != 0f)
+                {
+                    PushInput(BridgeProtocol.InputMouseMove, 0,
+                            (int)Math.Round(delta.x), (int)Math.Round(delta.y), now);
+                }
+
+                float scroll = mouse.scroll.ReadValue().y;
+
+                if (scroll != 0f)
+                {
+                    PushInput(BridgeProtocol.InputMouseWheel, 0, (int)Math.Round(scroll), 0, now);
+                }
+            }
+        }
+
+        private void MouseButton(UnityEngine.InputSystem.Controls.ButtonControl button, int code, long now)
+        {
+            if (button.wasPressedThisFrame)
+            {
+                PushInput(BridgeProtocol.InputMouseDown, code, 0, 0, now);
+            }
+            else if (button.wasReleasedThisFrame)
+            {
+                PushInput(BridgeProtocol.InputMouseUp, code, 0, 0, now);
+            }
+        }
+
+        private void PushInput(int type, int code, int a, int b, long now)
+        {
+            _memory.PushInput(new InputEvent { Type = type, Code = code, A = a, B = b, TimestampMs = now });
+        }
+
+        /// <summary>
+        /// Minecraft -> host: drive the How to Fish player to follow the authoritative Minecraft
+        /// player (<c>McState</c>) through the coordinate mapper. Enabled by <c>player.follow</c>;
+        /// this only ever writes the HOST transform, never the Minecraft player.
+        /// </summary>
+        private void FollowMcPlayer()
+        {
+            if (!_config.PlayerFollow)
+            {
+                return;
+            }
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            if (!_memory.McAlive(now))
+            {
+                return;
+            }
+
             Player player = Player.LocalPlayer;
 
             if (!player || !player.Transform)
@@ -121,25 +264,24 @@ namespace CrossMC.HowToFish
                 return;
             }
 
-            Vector3 pos = _mapper.ToMc(player.Transform.position);
-            Vector3 rot = player.CamObject ? player.CamObject.eulerAngles : Vector3.zero;
+            McState mc;
 
-            var state = new HostState
+            try
             {
-                Flags = 1, // in game
-                TimestampMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
-                PosX = pos.x,
-                PosY = pos.y,
-                PosZ = pos.z,
-                Yaw = rot.y,
-                Pitch = rot.x,
-                Roll = rot.z,
-                EyeHeight = 1.62f,
-                UnitsPerBlock = 1f / Mathf.Max(0.0001f, _config.Scale),
-                ViewportW = Screen.width,
-                ViewportH = Screen.height,
-            };
-            _memory.WriteHostState(state);
+                mc = _memory.ReadMcState();
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
+            player.Transform.position = host;
+
+            if (_config.PlayerFollowRotation)
+            {
+                player.Transform.rotation = Quaternion.Euler(mc.Pitch, mc.Yaw, 0f);
+            }
         }
 
         private void ExportColliders()

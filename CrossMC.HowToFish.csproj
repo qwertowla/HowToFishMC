@@ -52,6 +52,10 @@
       <HintPath>$(GameDir)\How to Fish_Data\Managed\UnityEngine.PhysicsModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="Unity.InputSystem">
+      <HintPath>$(GameDir)\How to Fish_Data\Managed\Unity.InputSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="FishNet.Runtime">
       <HintPath>$(GameDir)\How to Fish_Data\Managed\FishNet.Runtime.dll</HintPath>
       <Private>false</Private>
