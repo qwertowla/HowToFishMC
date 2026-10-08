@@ -1,0 +1,23 @@
+# C# / .NET build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+.vs/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local scratch / game assembly copies (never committed)
+.tools/
+.baseline/
+refs/
