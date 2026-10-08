@@ -48,8 +48,10 @@ dotnet build -c Release
 - **环境**——发布宿主环境 / 表现为 `HostState`（视口、相机模式；仅信息性——玩家权威在 Minecraft）。
 - **输入**——用 Unity Input System 采集键鼠，映射为 CrossMC 语义键码后经 `InputRing` 转发（`input.capture`）；
   Minecraft 把它们注入**自身**的 `KeyBinding`/`Mouse`，因此原生移动/视角/碰撞照常生效。
-- **跟随**——（可选的 `player.follow`）通过 `CoordinateMapper` 让 How to Fish 玩家跟随权威的 Minecraft
-  玩家（`McState`）。
+- **视角**——（可选的 `camera.follow`）让 How to Fish 相机跟随 Minecraft 玩家的视角（`McState` 的
+  yaw/pitch）。若画面镜像或上下反了，调整 `camera.yawSign` / `camera.pitchSign`。
+- **跟随**——（可选的 `player.follow`）通过 `CoordinateMapper` 增量地让 How to Fish 玩家跟随权威的
+  Minecraft 玩家（`McState`）。
 - **碰撞**——发布宿主世界的 Collider AABB，供 Minecraft 构建碰撞代理。
 - **实体**——发布宿主生物，带稳定的 CrossMC **`CrossEntityId`**（由宿主的 `NetworkObject.ObjectId` 映射），
   Minecraft 据此生成代理实体。

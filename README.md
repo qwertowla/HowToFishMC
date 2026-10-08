@@ -54,8 +54,11 @@ Install into `...\How to Fish\BepInEx\plugins\` together with CrossMC's `CrossMC
 - **Input** — captures keyboard/mouse with the Unity Input System, maps keys to CrossMC semantics
   and forwards them through the CrossMC `InputRing` (`input.capture`); Minecraft injects them into
   its **own** `KeyBinding`/`Mouse`, so its native movement/look/collision still apply.
+- **Camera** — (opt-in, `camera.follow`) makes the How to Fish camera follow the Minecraft player's
+  view (yaw/pitch from `McState`). Calibrate `camera.yawSign` / `camera.pitchSign` if the view is
+  mirrored or inverted.
 - **Follow** — (opt-in, `player.follow`) drives the How to Fish player to follow the authoritative
-  Minecraft player (`McState`) through the `CoordinateMapper`.
+  Minecraft player (`McState`) incrementally through the `CoordinateMapper`.
 - **Collision** — publishes host world collider AABBs so Minecraft can build collision proxies.
 - **Entities** — publishes host creatures with a stable CrossMC **`CrossEntityId`** (mapped from the
   host-native `NetworkObject.ObjectId`) so Minecraft can spawn proxy entities.

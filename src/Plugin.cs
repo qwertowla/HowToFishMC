@@ -48,6 +48,7 @@ namespace CrossMC.HowToFish
         private long _followMoves;
         private bool _loggedInputUnavailable;
         private bool _anchored;
+        private long _cameraFollows;
 
         // Incremental follow state.
         private const float ReAnchorDistance = 4f;     // host moved this far without us -> resync
@@ -174,6 +175,60 @@ namespace CrossMC.HowToFish
         }
 
         /// <summary>
+        /// Host camera follows the Minecraft player's view (McState yaw/pitch). Runs in LateUpdate so
+        /// it wins over the game's own camera update for the rendered frame; the host camera remains
+        /// purely a follower (Minecraft is the view authority).
+        /// </summary>
+        private void LateUpdate()
+        {
+            if (_memory == null || !_config.FollowCamera)
+            {
+                return;
+            }
+
+            if (!_memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
+            {
+                return;
+            }
+
+            Player player = Player.LocalPlayer;
+
+            if (!player || !player.CamObject)
+            {
+                return;
+            }
+
+            McState mc;
+
+            try
+            {
+                mc = _memory.ReadMcState();
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            if ((mc.Flags & McState.InWorld) == 0)
+            {
+                return;
+            }
+
+            float yaw = mc.Yaw * _config.CameraYawSign;
+            float pitch = mc.Pitch * _config.CameraPitchSign;
+            player.CamObject.rotation = Quaternion.Euler(pitch, yaw, 0f);
+
+            if (_cameraFollows == 0)
+            {
+                Logger.LogInfo("CrossMC: camera follow active (yawSign=" + _config.CameraYawSign
+                        + " pitchSign=" + _config.CameraPitchSign
+                        + "). Flip the signs in host.properties if the view is mirrored/inverted.");
+            }
+
+            _cameraFollows++;
+        }
+
+        /// <summary>
         /// One-time alignment: makes the host player's current position and the Minecraft player's
         /// current position denote the same point, so host &lt;-&gt; MC movement is relative and
         /// neither player is yanked to a foreign coordinate. Requires <c>transform.autoAnchor</c>.
@@ -276,13 +331,8 @@ namespace CrossMC.HowToFish
 
             if (keyboard == null && mouseDevice == null)
             {
-                if (!_loggedInputUnavailable)
-                {
-                    _loggedInputUnavailable = true;
-                    Logger.LogWarning("CrossMC: Unity Input System reports no Keyboard/Mouse device. "
-                            + "Host input will not be captured (is How to Fish focused / using the new Input System?).");
-                }
-
+                // Fall back to the legacy Input API if the new Input System has no devices.
+                CaptureLegacy(now);
                 return;
             }
 
@@ -333,6 +383,78 @@ namespace CrossMC.HowToFish
                 {
                     PushInput(BridgeProtocol.InputMouseWheel, 0, (int)Math.Round(scroll), 0, now);
                 }
+            }
+        }
+
+        /// <summary>
+        /// Fallback capture through the legacy <see cref="UnityEngine.Input"/> API, used when the new
+        /// Input System reports no devices. Wrapped in try/catch because legacy Input throws when the
+        /// project is configured for the new Input System only.
+        /// </summary>
+        private void CaptureLegacy(long now)
+        {
+            try
+            {
+                LegacyKey(KeyCode.W, BridgeProtocol.KeyForward, now);
+                LegacyKey(KeyCode.S, BridgeProtocol.KeyBack, now);
+                LegacyKey(KeyCode.A, BridgeProtocol.KeyLeft, now);
+                LegacyKey(KeyCode.D, BridgeProtocol.KeyRight, now);
+                LegacyKey(KeyCode.Space, BridgeProtocol.KeyJump, now);
+                LegacyKey(KeyCode.LeftShift, BridgeProtocol.KeySneak, now);
+                LegacyKey(KeyCode.LeftControl, BridgeProtocol.KeySprint, now);
+
+                LegacyMouseButton(0, now);
+                LegacyMouseButton(1, now);
+                LegacyMouseButton(2, now);
+
+                float dx = Input.GetAxisRaw("Mouse X");
+                float dy = Input.GetAxisRaw("Mouse Y");
+
+                if (dx != 0f || dy != 0f)
+                {
+                    PushInput(BridgeProtocol.InputMouseMove, 0,
+                            (int)Math.Round(dx * 10f), (int)Math.Round(dy * 10f), now);
+                }
+
+                float scroll = Input.mouseScrollDelta.y;
+
+                if (scroll != 0f)
+                {
+                    PushInput(BridgeProtocol.InputMouseWheel, 0, (int)Math.Round(scroll), 0, now);
+                }
+            }
+            catch (Exception)
+            {
+                if (!_loggedInputUnavailable)
+                {
+                    _loggedInputUnavailable = true;
+                    Logger.LogWarning("CrossMC: no usable input backend (new Input System has no "
+                            + "Keyboard/Mouse and legacy Input is unavailable). Host input disabled.");
+                }
+            }
+        }
+
+        private void LegacyKey(KeyCode key, int semantic, long now)
+        {
+            if (Input.GetKeyDown(key))
+            {
+                PushInput(BridgeProtocol.InputKeyDown, semantic, 0, 0, now);
+            }
+            else if (Input.GetKeyUp(key))
+            {
+                PushInput(BridgeProtocol.InputKeyUp, semantic, 0, 0, now);
+            }
+        }
+
+        private void LegacyMouseButton(int code, long now)
+        {
+            if (Input.GetMouseButtonDown(code))
+            {
+                PushInput(BridgeProtocol.InputMouseDown, code, 0, 0, now);
+            }
+            else if (Input.GetMouseButtonUp(code))
+            {
+                PushInput(BridgeProtocol.InputMouseUp, code, 0, 0, now);
             }
         }
 

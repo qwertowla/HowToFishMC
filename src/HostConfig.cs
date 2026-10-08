@@ -37,6 +37,12 @@ namespace CrossMC.HowToFish
         public bool PlayerFollow;
         public bool PlayerFollowRotation;
 
+        // Host camera follows the Minecraft player's view (McState yaw/pitch). Independent of
+        // position follow. Signs let you calibrate handedness (Unity left-handed vs MC).
+        public bool FollowCamera = true;
+        public float CameraYawSign = 1f;
+        public float CameraPitchSign = 1f;
+
         // Compute the host<->MC origin automatically from the current players (recommended); if
         // false, the manual transform.origin* values are used.
         public bool AutoAnchor = true;
@@ -90,6 +96,9 @@ namespace CrossMC.HowToFish
             cfg.PlayerFollow = cfg.GetBool("player.follow", false);
             cfg.PlayerFollowRotation = cfg.GetBool("player.followRotation", false);
             cfg.AutoAnchor = cfg.GetBool("transform.autoAnchor", true);
+            cfg.FollowCamera = cfg.GetBool("camera.follow", true);
+            cfg.CameraYawSign = cfg.GetFloat("camera.yawSign", 1f);
+            cfg.CameraPitchSign = cfg.GetFloat("camera.pitchSign", 1f);
             return cfg;
         }
 
