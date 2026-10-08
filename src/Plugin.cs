@@ -85,6 +85,11 @@ namespace CrossMC.HowToFish
             _config = HostConfig.Load();
             _mapper = new CoordinateMapper(_config);
 
+            // The user plays Minecraft (focused); How to Fish must keep updating in the background or
+            // the follow loop stops the moment the player focuses Minecraft. Force it on.
+            Application.runInBackground = true;
+            Logger.LogInfo("CrossMC: Application.runInBackground = true (host keeps following while Minecraft is focused)");
+
             try
             {
                 _memory = BridgeMemory.Open();
@@ -121,6 +126,11 @@ namespace CrossMC.HowToFish
 
         private void Update()
         {
+            if (!Application.runInBackground)
+            {
+                Application.runInBackground = true;
+            }
+
             if (_memory == null)
             {
                 return;
@@ -207,9 +217,43 @@ namespace CrossMC.HowToFish
                     }
                 }
 
+                string playersInfo = "";
+
+                if (!hp)
+                {
+                    try
+                    {
+                        int total = 0;
+                        int localOwned = 0;
+
+                        foreach (Player p in PlayerManager.Players)
+                        {
+                            if (p == null)
+                            {
+                                continue;
+                            }
+
+                            total++;
+                            var no = p.NetworkObject;
+
+                            if (no != null && no.Owner != null && no.Owner.IsLocalClient)
+                            {
+                                localOwned++;
+                            }
+                        }
+
+                        playersInfo = " players=" + total + " localOwned=" + localOwned;
+                    }
+                    catch (Exception e)
+                    {
+                        playersInfo = " players=err(" + e.GetType().Name + ")";
+                    }
+                }
+
                 Logger.LogInfo("CrossMC status: hostAlive=" + _memory.HostAlive(now)
                         + " mcAlive=" + _memory.McAlive(now)
                         + " mcState=(" + mcStr + ")"
+                        + playersInfo
                         + " | hostPlayer=" + (hp ? "ok" : "null")
                         + " hostTransform=" + (hp && hp.Transform ? "ok" : "null")
                         + " hostMovement=" + (hp && hp.Movement ? "ok" : "null")
