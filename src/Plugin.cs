@@ -67,6 +67,7 @@ namespace CrossMC.HowToFish
         private long _cameraLogCounter;
         private bool _hardLockApplied;
         private Player _hardLockPlayer;
+        private string _localPlayerSource = "-";
 
 
 
@@ -199,7 +200,7 @@ namespace CrossMC.HowToFish
             {
                 _statusTimer = 2f;
                 long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                Player hp = Player.LocalPlayer;
+                Player hp = FindLocalPlayer();
                 string mcStr = "-";
 
                 if (_memory.McAlive(now))
@@ -259,6 +260,7 @@ namespace CrossMC.HowToFish
                         + " hostMovement=" + (hp && hp.Movement ? "ok" : "null")
                         + " hostRigidbody=" + (hp && hp.Rigidbody ? "ok" : "null")
                         + " hostCamera=" + (hp && hp.CamObject ? "ok" : "null")
+                        + " localPlayerSource=" + _localPlayerSource
                         + " | anchored=" + _anchored
                         + " follow=" + _config.PlayerFollow
                         + " followState=" + _followState
@@ -331,7 +333,7 @@ namespace CrossMC.HowToFish
                 return;
             }
 
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
 
             if (!player || !player.Transform)
             {
@@ -406,7 +408,7 @@ namespace CrossMC.HowToFish
                 return;
             }
 
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
             Transform camTransform = player && player.CamObject
                     ? player.CamObject
                     : (FindCamera() != null ? FindCamera().transform : null);
@@ -481,7 +483,7 @@ namespace CrossMC.HowToFish
                 return;
             }
 
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
 
             if (!player || !player.Transform)
             {
@@ -521,7 +523,7 @@ namespace CrossMC.HowToFish
         /// </summary>
         private void PublishHostEnvironment()
         {
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var state = new HostState
             {
@@ -741,6 +743,55 @@ namespace CrossMC.HowToFish
             }
         }
 
+        /// <summary>
+        /// The single local-player accessor. Prefers <c>Player.LocalPlayer</c>; if it is null, falls
+        /// back to <c>PlayerManager.Players</c> and picks the player whose FishNet owner is the local
+        /// client. Logs which path succeeded (once per change).
+        /// </summary>
+        private Player FindLocalPlayer()
+        {
+            Player direct = Player.LocalPlayer;
+
+            if (direct)
+            {
+                NoteLocalPlayerSource("Player.LocalPlayer");
+                return direct;
+            }
+
+            var players = PlayerManager.Players;
+
+            if (players != null)
+            {
+                foreach (Player candidate in players)
+                {
+                    if (!candidate)
+                    {
+                        continue;
+                    }
+
+                    var no = candidate.NetworkObject;
+
+                    if (no != null && no.Owner != null && no.Owner.IsLocalClient)
+                    {
+                        NoteLocalPlayerSource("PlayerManager.Players owner.IsLocalClient");
+                        return candidate;
+                    }
+                }
+            }
+
+            _localPlayerSource = "-";
+            return null;
+        }
+
+        private void NoteLocalPlayerSource(string source)
+        {
+            if (_localPlayerSource != source)
+            {
+                _localPlayerSource = source;
+                Logger.LogInfo("CrossMC: resolved local player from " + source);
+            }
+        }
+
         private static Vector3 HostPos(Player player)
         {
             if (player.Rigidbody != null)
@@ -852,7 +903,7 @@ namespace CrossMC.HowToFish
                 return;
             }
 
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
 
             if (!player)
             {
@@ -950,7 +1001,7 @@ namespace CrossMC.HowToFish
                 return;
             }
 
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
 
             if (!player || player.Vitals == null)
             {
@@ -1021,7 +1072,7 @@ namespace CrossMC.HowToFish
 
         private void ExportColliders()
         {
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
             Vector3 center;
 
             if (player && player.Transform)
@@ -1080,7 +1131,7 @@ namespace CrossMC.HowToFish
 
         private void ExportEntities()
         {
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
             bool haveCenter = player && player.Transform;
             Vector3 center = haveCenter ? player.Transform.position : Vector3.zero;
 
@@ -1176,7 +1227,7 @@ namespace CrossMC.HowToFish
             }
 
             // No bound creature (e.g. the mapping targets the player): apply to the local player.
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
 
             if (player && player.Vitals != null)
             {
@@ -1219,11 +1270,11 @@ namespace CrossMC.HowToFish
             }
         }
 
-        private static object[] BuildHitArgs(MethodInfo method, Creature creature, int amount, DamageEvent d)
+        private object[] BuildHitArgs(MethodInfo method, Creature creature, int amount, DamageEvent d)
         {
             ParameterInfo[] ps = method.GetParameters();
             object[] args = new object[ps.Length];
-            Player player = Player.LocalPlayer;
+            Player player = FindLocalPlayer();
 
             for (int i = 0; i < ps.Length; i++)
             {
