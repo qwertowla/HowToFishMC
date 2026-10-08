@@ -50,13 +50,7 @@ namespace CrossMC.HowToFish
         private bool _anchored;
         private long _cameraFollows;
 
-        // Incremental follow state.
-        private const float ReAnchorDistance = 4f;     // host moved this far without us -> resync
-        private const float McTeleportDistance = 16f;  // ignore MC teleports larger than this
-        private bool _hasLastMc;
-        private Vector3 _lastMc;
-        private bool _hasLastHostSet;
-        private Vector3 _lastHostSet;
+
 
         private readonly UnityEngine.Collider[] _overlapBuffer = new UnityEngine.Collider[512];
         private readonly List<BridgeCollider> _colliders = new List<BridgeCollider>();
@@ -133,6 +127,7 @@ namespace CrossMC.HowToFish
             try
             {
                 FollowMcPlayer();
+                FollowVitals();
             }
             catch (Exception e)
             {
@@ -229,9 +224,11 @@ namespace CrossMC.HowToFish
         }
 
         /// <summary>
-        /// One-time alignment: makes the host player's current position and the Minecraft player's
-        /// current position denote the same point, so host &lt;-&gt; MC movement is relative and
-        /// neither player is yanked to a foreign coordinate. Requires <c>transform.autoAnchor</c>.
+        /// One-time coordinate alignment: makes the host player's current position and the Minecraft
+        /// player's current position denote the same point. Afterwards the mapping (origin/scale/
+        /// axis) is FIXED — it is never recomputed from the moving players, so host colliders,
+        /// entities and world objects stay correctly placed. Requires <c>transform.autoAnchor</c>;
+        /// otherwise the manual <c>transform.origin*</c> is used.
         /// </summary>
         private void EnsureAnchor()
         {
@@ -506,22 +503,15 @@ namespace CrossMC.HowToFish
         }
 
         /// <summary>
-        /// Minecraft -> host: the How to Fish player follows the authoritative Minecraft player
-        /// (<c>McState</c>) **incrementally**. Each frame we add only the Minecraft player's
-        /// movement delta (mapped to host space) to the host player's *current* position — we never
-        /// write an absolute coordinate, so the host game stays free to place the player (menu,
-        /// rooms, boats) and nothing gets yanked to a foreign position.
-        ///
-        /// <p>If the host game itself relocates the player (a jump we did not cause), or the
-        /// Minecraft player teleports, we resynchronize and skip that frame instead of propagating
-        /// the jump. Movement goes through the game's own <c>PlayerMovement.Teleport</c>
-        /// (Rigidbody-based), never a raw transform write.</p>
+        /// Minecraft -> host: the How to Fish player is the *representation* of the authoritative
+        /// Minecraft player. Its position is the fixed coordinate mapping of <c>McState</c> (the
+        /// origin is computed once, then constant) — no per-frame re-anchoring. Movement goes through
+        /// the game's own <c>PlayerMovement.Teleport</c> (Rigidbody-based), not a raw transform write.
         /// </summary>
         private void FollowMcPlayer()
         {
             if (!_config.PlayerFollow)
             {
-                _hasLastMc = false;
                 return;
             }
 
@@ -529,7 +519,6 @@ namespace CrossMC.HowToFish
 
             if (!_memory.McAlive(now))
             {
-                _hasLastMc = false;
                 return;
             }
 
@@ -537,7 +526,6 @@ namespace CrossMC.HowToFish
 
             if (!player || !player.Transform)
             {
-                _hasLastMc = false;
                 return;
             }
 
@@ -554,72 +542,29 @@ namespace CrossMC.HowToFish
 
             if ((mc.Flags & McState.InWorld) == 0)
             {
-                _hasLastMc = false;
                 return;
             }
 
-            Vector3 mcPos = new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z);
-            Vector3 curHost = player.Transform.position;
-
-            if (!_hasLastMc || !_hasLastHostSet)
-            {
-                _lastMc = mcPos;
-                _lastHostSet = curHost;
-                _hasLastMc = true;
-                _hasLastHostSet = true;
-                return;
-            }
-
-            // The host game moved the player on its own (menu -> room, boat, respawn): resync and
-            // re-anchor the absolute mapper (for colliders/entities) instead of fighting it.
-            if (Vector3.Distance(curHost, _lastHostSet) > ReAnchorDistance)
-            {
-                _lastMc = mcPos;
-                _lastHostSet = curHost;
-                _mapper.Anchor(curHost, mcPos);
-                _anchored = true;
-                Logger.LogInfo("CrossMC: host player relocated by the game; re-anchored and resynced.");
-                return;
-            }
-
-            Vector3 deltaMc = mcPos - _lastMc;
-            _lastMc = mcPos;
-
-            // Ignore a Minecraft-side teleport (do not drag the host player there).
-            if (deltaMc.sqrMagnitude > McTeleportDistance * McTeleportDistance)
-            {
-                return;
-            }
-
-            Vector3 hostDelta = _mapper.DeltaToHost(deltaMc);
-
-            if (hostDelta.sqrMagnitude < 1e-6f)
-            {
-                return;
-            }
-
-            Vector3 target = curHost + hostDelta;
+            Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
 
             if (player.Movement != null)
             {
-                player.Movement.Teleport(target, true);
+                player.Movement.Teleport(host, true);
             }
             else if (player.Rigidbody != null)
             {
-                player.Rigidbody.position = target;
+                player.Rigidbody.position = host;
             }
             else
             {
-                player.Transform.position = target;
+                player.Transform.position = host;
             }
-
-            _lastHostSet = target;
 
             if (_followMoves == 0)
             {
-                Logger.LogInfo("CrossMC: following McState -> host player incrementally (first delta "
-                        + hostDelta.x.ToString("F2") + "," + hostDelta.y.ToString("F2") + "," + hostDelta.z.ToString("F2")
-                        + ") via PlayerMovement.Teleport.");
+                Logger.LogInfo("CrossMC: following McState -> host player (fixed origin) at "
+                        + host.x.ToString("F2") + "," + host.y.ToString("F2") + "," + host.z.ToString("F2")
+                        + " via PlayerMovement.Teleport.");
             }
 
             _followMoves++;
@@ -627,6 +572,70 @@ namespace CrossMC.HowToFish
             if (_config.PlayerFollowRotation)
             {
                 player.Transform.rotation = Quaternion.Euler(mc.Pitch, mc.Yaw, 0f);
+            }
+        }
+
+        private void FollowVitals()
+        {
+            if (!_config.FollowVitals || !_memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
+            {
+                return;
+            }
+
+            Player player = Player.LocalPlayer;
+
+            if (!player || player.Vitals == null)
+            {
+                return;
+            }
+
+            McState mc;
+
+            try
+            {
+                mc = _memory.ReadMcState();
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            if ((mc.Flags & McState.InWorld) == 0)
+            {
+                return;
+            }
+
+            ApplyVitals(mc, player);
+        }
+
+        /// <summary>
+        /// Minecraft health/hunger -> host player (Minecraft owns these). Best-effort: health via
+        /// Heal/TakeDamage deltas, hunger via RestoreFullness. Marked for in-game verification.
+        /// </summary>
+        private void ApplyVitals(McState mc, Player player)
+        {
+            if (!_config.FollowVitals || player.Vitals == null)
+            {
+                return;
+            }
+
+            var vitals = player.Vitals;
+            int healthDelta = mc.Health - vitals.Health;
+
+            if (healthDelta > 0)
+            {
+                vitals.Heal(healthDelta);
+            }
+            else if (healthDelta < 0 && player.Transform != null)
+            {
+                vitals.TakeDamage(-healthDelta, Vector3.zero, player.Transform.position, false);
+            }
+
+            int hungerDelta = mc.Hunger - vitals.Fullness;
+
+            if (hungerDelta > 0)
+            {
+                vitals.RestoreFullness(hungerDelta);
             }
         }
 

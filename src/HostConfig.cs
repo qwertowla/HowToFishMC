@@ -33,9 +33,13 @@ namespace CrossMC.HowToFish
 
         // Player control flow: Minecraft is authoritative. The host only (a) captures input and
         // (b) follows the Minecraft player. Both are host-side toggles.
-        public bool InputCapture = true;
+        // Generic CrossMC capability, NOT the normal player control path. The user plays Minecraft
+        // with Minecraft's own input; leave this off unless you specifically want host->MC events.
+        public bool InputCapture; // default false
+
         public bool PlayerFollow;
         public bool PlayerFollowRotation;
+        public bool FollowVitals = true; // Minecraft health/hunger -> host player
 
         // Host camera follows the Minecraft player's view (McState yaw/pitch). Independent of
         // position follow. Signs let you calibrate handedness (Unity left-handed vs MC).
@@ -92,9 +96,10 @@ namespace CrossMC.HowToFish
             cfg.OverlayWidth = cfg.GetFloat("overlay.width", 0.35f);
             cfg.OverlayHeight = cfg.GetFloat("overlay.height", 0.35f);
 
-            cfg.InputCapture = cfg.GetBool("input.capture", true);
+            cfg.InputCapture = cfg.GetBool("input.capture", false);
             cfg.PlayerFollow = cfg.GetBool("player.follow", false);
             cfg.PlayerFollowRotation = cfg.GetBool("player.followRotation", false);
+            cfg.FollowVitals = cfg.GetBool("player.followVitals", true);
             cfg.AutoAnchor = cfg.GetBool("transform.autoAnchor", true);
             cfg.FollowCamera = cfg.GetBool("camera.follow", true);
             cfg.CameraYawSign = cfg.GetFloat("camera.yawSign", 1f);
@@ -229,15 +234,5 @@ namespace CrossMC.HowToFish
                     mc.z / Scale + OriginZ);
         }
 
-        /// <summary>
-        /// Linear part only (no origin): a Minecraft-space delta -&gt; host-space delta. Used for
-        /// incremental following, which never applies an absolute coordinate.
-        /// </summary>
-        public Vector3 DeltaToHost(Vector3 mcDelta)
-        {
-            float x = FlipX ? -mcDelta.x : mcDelta.x;
-
-            return new Vector3(x / Scale, mcDelta.y / Scale, mcDelta.z / Scale);
-        }
     }
 }

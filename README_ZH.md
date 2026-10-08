@@ -46,12 +46,13 @@ dotnet build -c Release
 
 - **画面**——从共享内存读取最新的 Minecraft 帧，作为屏幕矩形绘制。
 - **环境**——发布宿主环境 / 表现为 `HostState`（视口、相机模式；仅信息性——玩家权威在 Minecraft）。
-- **输入**——用 Unity Input System 采集键鼠，映射为 CrossMC 语义键码后经 `InputRing` 转发（`input.capture`）；
-  Minecraft 把它们注入**自身**的 `KeyBinding`/`Mouse`，因此原生移动/视角/碰撞照常生效。
+- **输入（通用，默认关闭）**——玩家用 Minecraft 自己的输入游玩；本适配器不驱动玩家。`input.capture`
+  （默认 `false`）可选地把宿主键鼠经 `InputRing` 转发（通用能力；Minecraft 会注入自身的
+  `KeyBinding`/`Mouse`）。
 - **视角**——（可选的 `camera.follow`）让 How to Fish 相机跟随 Minecraft 玩家的视角（`McState` 的
   yaw/pitch）。若画面镜像或上下反了，调整 `camera.yawSign` / `camera.pitchSign`。
-- **跟随**——（可选的 `player.follow`）通过 `CoordinateMapper` 增量地让 How to Fish 玩家跟随权威的
-  Minecraft 玩家（`McState`）。
+- **跟随**——（可选的 `player.follow`）把 How to Fish 玩家放到 Minecraft 玩家经固定 `CoordinateMapper`
+  映射后的位置，并镜像 Minecraft 的 **Health/Hunger**（`player.followVitals`）。
 - **碰撞**——发布宿主世界的 Collider AABB，供 Minecraft 构建碰撞代理。
 - **实体**——发布宿主生物，带稳定的 CrossMC **`CrossEntityId`**（由宿主的 `NetworkObject.ObjectId` 映射），
   Minecraft 据此生成代理实体。
@@ -60,24 +61,27 @@ dotnet build -c Release
 
 ## 玩家权威
 
-**Minecraft 玩家是权威。** 宿主只负责采集输入并跟随结果，绝不移动 Minecraft 玩家：
+**玩 Minecraft，把 How to Fish 作为第二个世界接入。** Minecraft 是主游戏，Minecraft 玩家是唯一权威
+玩家：
 
 ```text
-宿主键鼠 ─▶ InputRing ─▶ Minecraft ─▶ Minecraft 玩家 ─▶ McState ─▶ 宿主玩家（跟随）
+玩家键鼠 ─▶ Minecraft 原生输入 ─▶ Minecraft 玩家 ─▶ McState
+                                        └─▶ 宿主玩家 + 宿主相机（镜像）
 ```
 
+- 宿主玩家/相机**镜像** `McState`（固定坐标映射）；它们只是表现，不是第二个玩家。
 - 宿主 Transform **绝不**回写 Minecraft 玩家（`HostState` 的位置只是信息性）。
-- 宿主不拥有移动/碰撞权威：最终状态由 Minecraft 决定，包括与宿主代理的碰撞。
-- 视角控制必须走输入（鼠标 delta），不要用 `HostState.yaw/pitch`。
+- Health/Hunger 由 Minecraft 流向宿主玩家。
+- `InputRing` 是通用能力，不是玩家控制路径。
 
 ## 配置（`host.properties`）
 
 属于本适配器，绝不进协议。包含世界→MC 变换与伤害倍率（`damage.default`、`damage.explosion`、
 `damage.projectile`、`damage.fall` 等）。
 
-`transform.autoAnchor=true`（默认）会以「当前玩家」为基准对齐两套坐标——把宿主玩家当前位置映射到
-Minecraft 玩家当前位置——之后宿主 ⇄ MC 只做相对移动，**两个玩家都不会被瞬移**到陌生坐标。设为
-`transform.autoAnchor=false` 则使用手动的 `transform.origin*`。
+`transform.autoAnchor=true`（默认）在**连接时**根据「宿主玩家当前位置 ↔ Minecraft 玩家当前位置」计算
+一次 Origin；此后 **Origin/Scale/轴映射固定不变**（不会每帧重锚），宿主玩家/相机按该固定映射镜像 MC，
+碰撞体与实体也因此保持正确对齐。设为 `transform.autoAnchor=false` 则使用手动的 `transform.origin*`。
 
 ## 线程
 

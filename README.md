@@ -51,14 +51,16 @@ Install into `...\How to Fish\BepInEx\plugins\` together with CrossMC's `CrossMC
 - **Frame** — reads the newest Minecraft frame from shared memory and draws it as a screen rectangle.
 - **Environment** — publishes the host environment/avatar as `HostState` (viewport, camera mode;
   informational only — Minecraft is authoritative for the player).
-- **Input** — captures keyboard/mouse with the Unity Input System, maps keys to CrossMC semantics
-  and forwards them through the CrossMC `InputRing` (`input.capture`); Minecraft injects them into
-  its **own** `KeyBinding`/`Mouse`, so its native movement/look/collision still apply.
+- **Input (generic, off by default)** — the user plays Minecraft with Minecraft's own input; this
+  adapter does not drive the player. `input.capture` (default `false`) can forward host keyboard/
+  mouse through the CrossMC `InputRing` as a generic capability (Minecraft would inject it into its
+  own `KeyBinding`/`Mouse`).
 - **Camera** — (opt-in, `camera.follow`) makes the How to Fish camera follow the Minecraft player's
   view (yaw/pitch from `McState`). Calibrate `camera.yawSign` / `camera.pitchSign` if the view is
   mirrored or inverted.
-- **Follow** — (opt-in, `player.follow`) drives the How to Fish player to follow the authoritative
-  Minecraft player (`McState`) incrementally through the `CoordinateMapper`.
+- **Follow** — (opt-in, `player.follow`) places the How to Fish player at the fixed `CoordinateMapper`
+  position of the authoritative Minecraft player (`McState`), and mirrors Minecraft **health/hunger**
+  (`player.followVitals`).
 - **Collision** — publishes host world collider AABBs so Minecraft can build collision proxies.
 - **Entities** — publishes host creatures with a stable CrossMC **`CrossEntityId`** (mapped from the
   host-native `NetworkObject.ObjectId`) so Minecraft can spawn proxy entities.
@@ -67,28 +69,30 @@ Install into `...\How to Fish\BepInEx\plugins\` together with CrossMC's `CrossMC
 
 ## Player authority
 
-**The Minecraft player is authoritative.** The host only captures input and follows the result; it
-never moves the Minecraft player:
+**Play Minecraft; How to Fish is integrated as a second world.** Minecraft is the main game and the
+Minecraft player is the one authoritative player:
 
 ```text
-host keyboard/mouse ─▶ InputRing ─▶ Minecraft ─▶ Minecraft player ─▶ McState ─▶ host player (follows)
+player keyboard/mouse ─▶ Minecraft native input ─▶ Minecraft player ─▶ McState
+                                                         └─▶ host player + host camera (mirror)
 ```
 
+- The host player/camera **mirror** `McState` (fixed coordinate mapping); they are representations,
+  not a second player.
 - The host transform is **never** written back onto the Minecraft player (`HostState` position is
   informational).
-- Host movement/collision is not authoritative: Minecraft decides the final state, including
-  collisions with host proxies.
-- View control must go through input (mouse delta), not `HostState.yaw/pitch`.
+- Health/hunger flow Minecraft → host player.
+- `InputRing` is a generic capability, not the player control path.
 
 ## Configuration (`host.properties`)
 
 Belongs to this adapter, never to the protocol. Holds the world→MC transform and the damage
 multipliers (`damage.default`, `damage.explosion`, `damage.projectile`, `damage.fall`, ...).
 
-`transform.autoAnchor=true` (default) aligns the two coordinate systems from the current players —
-the host player's position is mapped to the Minecraft player's position once — so host ⇄ MC
-movement is relative and **neither player is teleported** to a foreign coordinate. Set
-`transform.autoAnchor=false` to use the manual `transform.origin*`.
+`transform.autoAnchor=true` (default) computes the origin **once at connect** from the two players
+(host player position ↔ Minecraft player position). After that the **origin/scale/axis mapping is
+fixed** (never re-anchored), so the host player/camera mirror Minecraft at a stable mapping and
+colliders/entities stay aligned. Set `transform.autoAnchor=false` to use the manual `transform.origin*`.
 
 ## Threading
 
