@@ -73,6 +73,10 @@ dotnet build -c Release
 属于本适配器，绝不进协议。包含世界→MC 变换与伤害倍率（`damage.default`、`damage.explosion`、
 `damage.projectile`、`damage.fall` 等）。
 
+`transform.autoAnchor=true`（默认）会以「当前玩家」为基准对齐两套坐标——把宿主玩家当前位置映射到
+Minecraft 玩家当前位置——之后宿主 ⇄ MC 只做相对移动，**两个玩家都不会被瞬移**到陌生坐标。设为
+`transform.autoAnchor=false` 则使用手动的 `transform.origin*`。
+
 ## 线程
 
 所有游戏 API 都在 Unity 主线程调用；只有共享内存的读写是线程无关的。

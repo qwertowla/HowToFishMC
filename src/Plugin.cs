@@ -47,6 +47,7 @@ namespace CrossMC.HowToFish
         private long _inputEvents;
         private long _followMoves;
         private bool _loggedInputUnavailable;
+        private bool _anchored;
 
         private readonly UnityEngine.Collider[] _overlapBuffer = new UnityEngine.Collider[512];
         private readonly List<BridgeCollider> _colliders = new List<BridgeCollider>();
@@ -103,6 +104,10 @@ namespace CrossMC.HowToFish
             }
 
             _memory.WriteHostHeartbeat(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+            // Align the two coordinate systems once, from the current players (no teleport).
+            EnsureAnchor();
+
             PublishHostEnvironment();
 
             // Host -> Minecraft: capture keyboard/mouse and forward as InputRing events.
@@ -158,6 +163,49 @@ namespace CrossMC.HowToFish
                         + " entities=" + _entities.Count
                         + " colliders=" + _colliders.Count);
             }
+        }
+
+        /// <summary>
+        /// One-time alignment: makes the host player's current position and the Minecraft player's
+        /// current position denote the same point, so host &lt;-&gt; MC movement is relative and
+        /// neither player is yanked to a foreign coordinate. Requires <c>transform.autoAnchor</c>.
+        /// </summary>
+        private void EnsureAnchor()
+        {
+            if (_anchored || !_config.AutoAnchor)
+            {
+                return;
+            }
+
+            if (!_memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
+            {
+                return;
+            }
+
+            Player player = Player.LocalPlayer;
+
+            if (!player || !player.Transform)
+            {
+                return;
+            }
+
+            McState mc;
+
+            try
+            {
+                mc = _memory.ReadMcState();
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            Vector3 hp = player.Transform.position;
+            _mapper.Anchor(hp, new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
+            _anchored = true;
+            Logger.LogInfo("CrossMC: anchored host(" + hp.x.ToString("F1") + "," + hp.y.ToString("F1") + "," + hp.z.ToString("F1")
+                    + ") <-> mc(" + mc.X.ToString("F1") + "," + mc.Y.ToString("F1") + "," + mc.Z.ToString("F1")
+                    + "); follow will keep the host player near this point.");
         }
 
         /// <summary>

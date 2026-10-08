@@ -37,6 +37,10 @@ namespace CrossMC.HowToFish
         public bool PlayerFollow;
         public bool PlayerFollowRotation;
 
+        // Compute the host<->MC origin automatically from the current players (recommended); if
+        // false, the manual transform.origin* values are used.
+        public bool AutoAnchor = true;
+
         public static HostConfig Load()
         {
             var cfg = new HostConfig();
@@ -85,6 +89,7 @@ namespace CrossMC.HowToFish
             cfg.InputCapture = cfg.GetBool("input.capture", true);
             cfg.PlayerFollow = cfg.GetBool("player.follow", false);
             cfg.PlayerFollowRotation = cfg.GetBool("player.followRotation", false);
+            cfg.AutoAnchor = cfg.GetBool("transform.autoAnchor", true);
             return cfg;
         }
 
@@ -155,23 +160,48 @@ namespace CrossMC.HowToFish
         }
     }
 
-    /// <summary>Host (Unity) world space -> Minecraft space, per the configured origin/scale/flip.</summary>
-    public readonly struct CoordinateMapper
+    /// <summary>
+    /// Host (Unity) world space &lt;-&gt; Minecraft space. The origin can be set manually from config,
+    /// or computed by <see cref="Anchor"/> from an aligned pair of positions (the two worlds rarely
+    /// share an origin), so neither player has to be teleported.
+    /// </summary>
+    public sealed class CoordinateMapper
     {
-        private readonly HostConfig _cfg;
+        public float OriginX;
+        public float OriginY;
+        public float OriginZ;
+        public float Scale;
+        public bool FlipX;
 
         public CoordinateMapper(HostConfig cfg)
         {
-            _cfg = cfg;
+            OriginX = cfg.OriginX;
+            OriginY = cfg.OriginY;
+            OriginZ = cfg.OriginZ;
+            Scale = cfg.Scale == 0f ? 1f : cfg.Scale;
+            FlipX = cfg.FlipX;
+        }
+
+        /// <summary>
+        /// Aligns the two coordinate systems so that <paramref name="hostAnchor"/> (the host player's
+        /// current position) maps exactly to <paramref name="mcAnchor"/> (the Minecraft player's
+        /// current position). After this, host &lt;-&gt; MC movement is purely relative.
+        /// </summary>
+        public void Anchor(Vector3 hostAnchor, Vector3 mcAnchor)
+        {
+            float invX = FlipX ? -mcAnchor.x : mcAnchor.x;
+            OriginX = hostAnchor.x - invX / Scale;
+            OriginY = hostAnchor.y - mcAnchor.y / Scale;
+            OriginZ = hostAnchor.z - mcAnchor.z / Scale;
         }
 
         public Vector3 ToMc(Vector3 host)
         {
-            float x = (host.x - _cfg.OriginX) * _cfg.Scale;
-            float y = (host.y - _cfg.OriginY) * _cfg.Scale;
-            float z = (host.z - _cfg.OriginZ) * _cfg.Scale;
+            float x = (host.x - OriginX) * Scale;
+            float y = (host.y - OriginY) * Scale;
+            float z = (host.z - OriginZ) * Scale;
 
-            if (_cfg.FlipX)
+            if (FlipX)
             {
                 x = -x;
             }
@@ -182,13 +212,12 @@ namespace CrossMC.HowToFish
         /// <summary>Inverse of <see cref="ToMc"/>: Minecraft world space -> host world space.</summary>
         public Vector3 ToHost(Vector3 mc)
         {
-            float scale = _cfg.Scale == 0f ? 1f : _cfg.Scale;
-            float x = _cfg.FlipX ? -mc.x : mc.x;
+            float x = FlipX ? -mc.x : mc.x;
 
             return new Vector3(
-                    x / scale + _cfg.OriginX,
-                    mc.y / scale + _cfg.OriginY,
-                    mc.z / scale + _cfg.OriginZ);
+                    x / Scale + OriginX,
+                    mc.y / Scale + OriginY,
+                    mc.z / Scale + OriginZ);
         }
     }
 }

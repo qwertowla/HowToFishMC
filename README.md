@@ -82,6 +82,11 @@ host keyboard/mouse ─▶ InputRing ─▶ Minecraft ─▶ Minecraft player �
 Belongs to this adapter, never to the protocol. Holds the world→MC transform and the damage
 multipliers (`damage.default`, `damage.explosion`, `damage.projectile`, `damage.fall`, ...).
 
+`transform.autoAnchor=true` (default) aligns the two coordinate systems from the current players —
+the host player's position is mapped to the Minecraft player's position once — so host ⇄ MC
+movement is relative and **neither player is teleported** to a foreign coordinate. Set
+`transform.autoAnchor=false` to use the manual `transform.origin*`.
+
 ## Threading
 
 All game access runs on the Unity main thread; only the shared-memory reads/writes are
