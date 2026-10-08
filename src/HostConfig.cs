@@ -24,7 +24,7 @@ namespace CrossMC.HowToFish
         public int ColliderMax = 256;
 
         public float EntityRadius = 64f;
-        public float EntityInterval = 0.25f;
+        public float EntityInterval = 0.05f; // ~20 Hz entity position update
 
         public float OverlayX = 0.05f;
         public float OverlayY = 0.05f;
@@ -94,7 +94,7 @@ namespace CrossMC.HowToFish
             cfg.ColliderMax = (int)cfg.GetFloat("collider.max", 256f);
 
             cfg.EntityRadius = cfg.GetFloat("entity.radius", 64f);
-            cfg.EntityInterval = cfg.GetFloat("entity.interval", 0.25f);
+            cfg.EntityInterval = cfg.GetFloat("entity.interval", 0.05f);
 
             cfg.OverlayX = cfg.GetFloat("overlay.x", 0.05f);
             cfg.OverlayY = cfg.GetFloat("overlay.y", 0.05f);
