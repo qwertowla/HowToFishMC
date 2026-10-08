@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Reflection;
 using BepInEx;
 using UnityEngine;
@@ -48,9 +49,29 @@ namespace CrossMC.HowToFish
         private long _followMoves;
         private bool _loggedInputUnavailable;
         private bool _anchored;
+        private bool _mappingLocked;
+        private string _mappingMode = "init";
         private long _cameraFollows;
         private string _followSkip = "off";
         private bool _lastMcAlive;
+
+        // One-time player bootstrap (see UpdatePlayerBootstrap). _bootConfirmed gates the normal
+        // MC -> host follow so a freshly-loaded Minecraft player can never pull the host player.
+        private bool _bootConfirmed = true;
+        private string _bootState = "OFF";
+        private int _bootSeq;
+        private int _bootSeqCounter;
+        private bool _bootTargetSet;
+        private Vector3 _bootTargetMc;
+        private bool _lastMcInWorld;
+        private long _bootLogMs;
+        private long _bootStartMs;
+        private bool _confirmedDoneSeen;      // observed MC BOOTSTRAP_DONE for the current session
+        private double _mcInitialX, _mcInitialY, _mcInitialZ; // MC position when the session was detected
+        private string _lastFollowerSkipLog = "";
+
+        // Identifies the actual loaded build in the BepInEx log (deployment verification).
+        public const string BuildTag = "bootstrap+fixed-mapping 2026-10-08";
 
         // Diagnostics: requested -> applied -> survived-next-frame
         private string _followState = "INIT";
@@ -89,8 +110,22 @@ namespace CrossMC.HowToFish
 
         private void Awake()
         {
+            Logger.LogInfo("CrossMC HowToFish build=" + BuildTag
+                    + " assembly=" + typeof(Plugin).Assembly.GetName().Version
+                    + " dllWritten=" + SafeWriteTime(typeof(Plugin).Assembly.Location));
+            Logger.LogInfo("CrossMC hostConfig source=" + HostConfig.ConfigSource());
+
+            string userCfg = HostConfig.UserOverridePath();
+
+            if (File.Exists(userCfg))
+            {
+                Logger.LogWarning("CrossMC: user config overrides host.properties: " + userCfg);
+            }
+
             _config = HostConfig.Load();
             _mapper = new CoordinateMapper(_config);
+            Logger.LogInfo("CrossMC effective config: " + _config.Describe());
+            InitMapping();
 
             // The user plays Minecraft (focused); How to Fish must keep updating in the background or
             // the follow loop stops the moment the player focuses Minecraft. Force it on.
@@ -122,7 +157,6 @@ namespace CrossMC.HowToFish
 
                 Logger.LogInfo("CrossMC host ready. bridgeConfig=" + global::CrossMC.Bridge.Config.ConfigSource()
                         + " hostConfig=" + HostConfig.ConfigSource());
-                Logger.LogInfo("CrossMC effective config: " + _config.Describe());
             }
             catch (Exception e)
             {
@@ -147,6 +181,11 @@ namespace CrossMC.HowToFish
 
             // Align the two coordinate systems once, from the current players (no teleport).
             EnsureAnchor();
+
+            // One-time player bootstrap: while a Minecraft world is loading we must NOT let the
+            // freshly-loaded Minecraft player drive the host follower. Compute/confirm the
+            // alignment first; PublishHostEnvironment advertises the bootstrap target to Minecraft.
+            UpdatePlayerBootstrap();
 
             PublishHostEnvironment();
 
@@ -268,7 +307,11 @@ namespace CrossMC.HowToFish
                         + " hostRigidbody=" + (hp && hp.Rigidbody ? "ok" : "null")
                         + " hostCamera=" + (hp && hp.CamObject ? "ok" : "null")
                         + " localPlayerSource=" + _localPlayerSource
-                        + " | anchored=" + _anchored
+                        + " | mapping=" + _mappingMode
+                        + " mappingLocked=" + _mappingLocked
+                        + " anchored=" + _anchored
+                        + " bootState=" + _bootState
+                        + " bootConfirmed=" + _bootConfirmed
                         + " follow=" + _config.PlayerFollow
                         + " followState=" + _followState
                         + " followSkip=" + _followSkip
@@ -430,6 +473,22 @@ namespace CrossMC.HowToFish
             DumpComponentsOnce(player);
             EnsureFollowerTakeover(player);
 
+            if (!_bootConfirmed)
+            {
+                // The host player is frozen at its current position; do NOT let the freshly-loaded
+                // Minecraft save position drive it. Camera/vitals also wait (see LateUpdate/FollowVitals).
+                _followState = "BOOTSTRAP";
+                _followSkip = "player bootstrap in progress (host not following yet)";
+
+                if (_lastFollowerSkipLog != _bootState)
+                {
+                    _lastFollowerSkipLog = _bootState;
+                    Logger.LogInfo("FollowerLateUpdate: SKIP — bootstrap state=" + _bootState + " (not writing HOF player/camera)");
+                }
+
+                return;
+            }
+
             if (!_memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
             {
                 _followState = "NO_MC";
@@ -505,6 +564,13 @@ namespace CrossMC.HowToFish
         {
             FollowerLateUpdate();
 
+            if (!_bootConfirmed)
+            {
+                // Do not let the freshly-loaded Minecraft yaw/pitch drive the host camera either.
+                _cameraState = "BOOTSTRAP";
+                return;
+            }
+
             if (_memory == null || !_config.FollowCamera)
             {
                 _cameraState = "DISABLED";
@@ -574,16 +640,68 @@ namespace CrossMC.HowToFish
         }
 
         /// <summary>
-        /// One-time coordinate alignment: makes the host player's current position and the Minecraft
-        /// player's current position denote the same point. Afterwards the mapping (origin/scale/
-        /// axis) is FIXED — it is never recomputed from the moving players, so host colliders,
-        /// entities and world objects stay correctly placed. Requires <c>transform.autoAnchor</c>;
-        /// otherwise the manual <c>transform.origin*</c> is used.
+        /// Establishes the FIXED world mapping before any Minecraft world is involved.
+        ///
+        /// <p>Formal mode (<c>transform.autoAnchor=false</c>): the mapping comes from the explicit
+        /// <c>transform.origin*</c>/scale/flipX config and is locked immediately; the Minecraft save
+        /// position is never used to define it.</p>
+        ///
+        /// <p>Dev mode (<c>transform.autoAnchor=true</c>): reuse a previously established mapping
+        /// (persisted) if present; otherwise leave it unlocked and establish it ONCE on the first
+        /// aligned player pair, then lock and persist it. It is never re-anchored afterwards — not on
+        /// a new Minecraft world, a save reload, a reconnect or a host restart.</p>
+        /// </summary>
+        private void InitMapping()
+        {
+            if (!_config.AutoAnchor)
+            {
+                _mappingLocked = true;
+                _mappingMode = "explicit";
+                Logger.LogInfo("CrossMC mapping: EXPLICIT (formal) origin=("
+                        + _mapper.OriginX.ToString("F3") + "," + _mapper.OriginY.ToString("F3") + "," + _mapper.OriginZ.ToString("F3")
+                        + ") scale=" + _mapper.Scale.ToString("F3") + " flipX=" + _mapper.FlipX
+                        + " — locked; the Minecraft save position never affects it");
+                return;
+            }
+
+            if (MappingStore.TryLoad(out float ox, out float oy, out float oz, out float scale, out bool flipX))
+            {
+                _mapper.OriginX = ox;
+                _mapper.OriginY = oy;
+                _mapper.OriginZ = oz;
+                _mapper.Scale = scale == 0f ? 1f : scale;
+                _mapper.FlipX = flipX;
+                _mappingLocked = true;
+                _anchored = true;
+                _mappingMode = "auto-persisted";
+                Logger.LogInfo("CrossMC mapping: AUTO-ANCHOR reused persisted origin=("
+                        + ox.ToString("F3") + "," + oy.ToString("F3") + "," + oz.ToString("F3")
+                        + ") scale=" + scale.ToString("F3") + " flipX=" + flipX + " — locked");
+                return;
+            }
+
+            _mappingLocked = false;
+            _mappingMode = "auto-pending";
+            Logger.LogWarning("CrossMC mapping: autoAnchor is a DEV mode — it will anchor once from the "
+                    + "current players. Prefer transform.autoAnchor=false with an explicit world mapping.");
+        }
+
+        /// <summary>
+        /// Establishes the mapping once, only in the dev <c>autoAnchor</c> mode. It requires an
+        /// aligned player pair, then locks and persists the mapping so it is never recomputed. In
+        /// formal (explicit) mode this does nothing: the mapping is fixed from config.
         /// </summary>
         private void EnsureAnchor()
         {
-            if (_anchored || !_config.AutoAnchor)
+            if (_mappingLocked)
             {
+                return;
+            }
+
+            if (!_config.AutoAnchor)
+            {
+                _mappingLocked = true;
+                _mappingMode = "explicit";
                 return;
             }
 
@@ -619,10 +737,229 @@ namespace CrossMC.HowToFish
 
             Vector3 hp = player.Transform.position;
             _mapper.Anchor(hp, new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
+            _mappingLocked = true;
             _anchored = true;
-            Logger.LogInfo("CrossMC: anchored host(" + hp.x.ToString("F1") + "," + hp.y.ToString("F1") + "," + hp.z.ToString("F1")
+            _mappingMode = "auto-established";
+            MappingStore.Save(_mapper.OriginX, _mapper.OriginY, _mapper.OriginZ, _mapper.Scale, _mapper.FlipX);
+            Logger.LogInfo("CrossMC: auto-anchored host(" + hp.x.ToString("F1") + "," + hp.y.ToString("F1") + "," + hp.z.ToString("F1")
                     + ") <-> mc(" + mc.X.ToString("F1") + "," + mc.Y.ToString("F1") + "," + mc.Z.ToString("F1")
-                    + "); follow will keep the host player near this point.");
+                    + "); mapping LOCKED and persisted — it will not be re-anchored on world change (dev mode).");
+        }
+
+        /// <summary>
+        /// One-time player bootstrap handshake. When a Minecraft world/session becomes ready, the
+        /// host computes the target MC position of its current player through the fixed
+        /// CoordinateMapper (never re-anchored) and asks Minecraft to align there once
+        /// (<c>HostState.Bootstrap</c> + <c>teleportSeq</c>). Until confirmed, the normal
+        /// MC -&gt; host follow is gated off, so a freshly-loaded Minecraft save position can never
+        /// drag the host player. After confirmation, authority is Minecraft's again.
+        /// </summary>
+        private void UpdatePlayerBootstrap()
+        {
+            if (!_config.PlayerBootstrap)
+            {
+                _bootConfirmed = true;
+                SetBootState("OFF");
+                return;
+            }
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            if (!_memory.McAlive(now))
+            {
+                SetBootState("WAIT_MC");
+                return;
+            }
+
+            McState mc;
+
+            try
+            {
+                mc = _memory.ReadMcState();
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            bool inWorld = (mc.Flags & McState.InWorld) != 0;
+            bool mcDone = (mc.Flags & McState.BootstrapDone) != 0;
+
+            if (!inWorld)
+            {
+                if (_lastMcInWorld)
+                {
+                    Logger.LogInfo("CrossMC bootstrap: Minecraft world unloaded — host player stays put");
+                }
+
+                _lastMcInWorld = false;
+                _bootConfirmed = false;
+                _bootTargetSet = false;
+                _bootSeq = 0;
+                _confirmedDoneSeen = false;
+                SetBootState("WAIT_MC_WORLD");
+                return;
+            }
+
+            // MC world/session detection. The primary trigger is the MC-owned BOOTSTRAP_DONE flag:
+            // Minecraft clears it whenever a new ClientWorld loads. This is reliable even if the host
+            // never samples the brief "world == null" window (unlike an IN_WORLD edge).
+            if (!_lastMcInWorld)
+            {
+                _lastMcInWorld = true;
+                ArmBootstrap(mc, now, "world loaded");
+            }
+
+            if (_bootConfirmed)
+            {
+                if (mcDone)
+                {
+                    _confirmedDoneSeen = true;
+                }
+                else if (_confirmedDoneSeen)
+                {
+                    // MC cleared BOOTSTRAP_DONE => it entered a new world session. Re-arm.
+                    ArmBootstrap(mc, now, "new session (BOOTSTRAP_DONE cleared)");
+                }
+                else
+                {
+                    // Short grace right after our own confirmation, before MC publishes DONE.
+                    SetBootState("FOLLOW_ACTIVE");
+                    return;
+                }
+            }
+
+            // --- Bootstrap in progress (_bootConfirmed == false) ---
+            Player hp = FindLocalPlayer();
+
+            if (!hp || !hp.Transform)
+            {
+                SetBootState("WAIT_HOST");
+                LogBootstrapThrottled("waiting for host player");
+                return;
+            }
+
+            if (!_bootTargetSet)
+            {
+                Vector3 hpos = hp.Transform.position;
+                _bootTargetMc = _mapper.ToMc(hpos);
+                _bootSeq = ++_bootSeqCounter;
+
+                if (_bootSeq == 0)
+                {
+                    _bootSeq = ++_bootSeqCounter;
+                }
+
+                _bootTargetSet = true;
+                Logger.LogInfo("CrossMC bootstrap: target HOF=(" + F(hpos.x) + "," + F(hpos.y) + "," + F(hpos.z)
+                        + ") MC=(" + F(_bootTargetMc.x) + "," + F(_bootTargetMc.y) + "," + F(_bootTargetMc.z)
+                        + ") | mcInitial=(" + F(_mcInitialX) + "," + F(_mcInitialY) + "," + F(_mcInitialZ)
+                        + ") initialDistance=" + F(Distance((float)_mcInitialX, (float)_mcInitialY, (float)_mcInitialZ, _bootTargetMc))
+                        + " mappingMode=" + _mappingMode + " autoAnchor=" + _config.AutoAnchor);
+            }
+
+            float distance = Distance((float)mc.X, (float)mc.Y, (float)mc.Z, _bootTargetMc);
+            SetBootState("WAIT_CONFIRM");
+
+            if ((mcDone && distance < 3f) || distance < 1.5f)
+            {
+                _bootConfirmed = true;
+                _confirmedDoneSeen = mcDone;
+                SetBootState("FOLLOW_ACTIVE");
+                Logger.LogInfo("CrossMC bootstrap: completed (distance=" + F(distance)
+                        + ") — player authority switched to Minecraft");
+            }
+            else if (now - _bootStartMs > 10000)
+            {
+                // Safety valve: never leave follow/camera frozen forever if Minecraft can't align
+                // (e.g. a remote server that rejects the teleport). Fall back to Minecraft authority.
+                _bootConfirmed = true;
+                _confirmedDoneSeen = mcDone;
+                Logger.LogWarning("CrossMC bootstrap: timed out waiting for confirmation (distance=" + F(distance)
+                        + ") — falling back to Minecraft authority");
+                SetBootState("FOLLOW_ACTIVE");
+            }
+            else
+            {
+                LogBootstrapThrottled("state=WAIT_CONFIRM distance=" + F(distance));
+            }
+        }
+
+        /// <summary>Arms a fresh one-time bootstrap for the current MC world session.</summary>
+        private void ArmBootstrap(McState mc, long now, string reason)
+        {
+            _bootConfirmed = false;
+            _bootTargetSet = false;
+            _bootSeq = 0;
+            _bootStartMs = now;
+            _confirmedDoneSeen = false;
+            _mcInitialX = mc.X;
+            _mcInitialY = mc.Y;
+            _mcInitialZ = mc.Z;
+            SetBootState("WAIT_HOST");
+            Logger.LogInfo("CrossMC bootstrap: armed (" + reason + ") — mcInitial=("
+                    + F(mc.X) + "," + F(mc.Y) + "," + F(mc.Z) + ") mappingMode=" + _mappingMode
+                    + " mappingLocked=" + _mappingLocked + " autoAnchor=" + _config.AutoAnchor);
+        }
+
+        /// <summary>Logs a bootstrap state transition once (never per frame).</summary>
+        private void SetBootState(string state)
+        {
+            if (_bootState == state)
+            {
+                return;
+            }
+
+            _bootState = state;
+            Logger.LogInfo("CrossMC bootstrap: state=" + state
+                    + " mappingMode=" + _mappingMode
+                    + " mappingLocked=" + _mappingLocked
+                    + " autoAnchor=" + _config.AutoAnchor
+                    + " bootstrapCfg=" + _config.PlayerBootstrap
+                    + " bootConfirmed=" + _bootConfirmed);
+        }
+
+        private static float Distance(float x, float y, float z, Vector3 t)
+        {
+            float dx = x - t.x;
+            float dy = y - t.y;
+            float dz = z - t.z;
+            return Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        private static string F(float v)
+        {
+            return v.ToString("F2");
+        }
+
+        private static string F(double v)
+        {
+            return v.ToString("F2");
+        }
+
+        private static string SafeWriteTime(string path)
+        {
+            try
+            {
+                return File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm:ss");
+            }
+            catch (Exception)
+            {
+                return "unknown";
+            }
+        }
+
+        private void LogBootstrapThrottled(string message)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            if (now - _bootLogMs < 1000)
+            {
+                return;
+            }
+
+            _bootLogMs = now;
+            Logger.LogInfo("CrossMC bootstrap: " + message);
         }
 
         /// <summary>
@@ -655,6 +992,17 @@ namespace CrossMC.HowToFish
                 state.Pitch = rot.x;
                 state.Roll = rot.z;
                 state.EyeHeight = 1.62f;
+            }
+
+            // Bootstrap request: advertise the one-time alignment target + generation until Minecraft
+            // confirms. Minecraft teleports to (PosX,PosY,PosZ) once per new teleportSeq.
+            if (_config.PlayerBootstrap && !_bootConfirmed && _bootTargetSet)
+            {
+                state.Flags |= HostState.Bootstrap;
+                state.TeleportSeq = _bootSeq;
+                state.PosX = _bootTargetMc.x;
+                state.PosY = _bootTargetMc.y;
+                state.PosZ = _bootTargetMc.z;
             }
 
             _memory.WriteHostState(state);
@@ -1042,6 +1390,11 @@ namespace CrossMC.HowToFish
             if (!_config.FollowVitals || !_memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
             {
                 return;
+            }
+
+            if (!_bootConfirmed)
+            {
+                return; // wait until the player bootstrap is confirmed before mirroring health/hunger
             }
 
             Player player = FindLocalPlayer();

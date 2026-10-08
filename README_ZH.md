@@ -27,6 +27,7 @@ HowToFishMC/
 └─ src/
    ├─ Plugin.cs               BepInEx 入口 + 宿主导出 / 伤害消费
    ├─ HostConfig.cs           配置 + 坐标映射
+   ├─ MappingStore.cs         持久化固定世界映射（auto-anchor 锁定）
    └─ FrameOverlay.cs         绘制 Minecraft 画面
 ```
 
@@ -79,9 +80,29 @@ dotnet build -c Release
 属于本适配器，绝不进协议。包含世界→MC 变换与伤害倍率（`damage.default`、`damage.explosion`、
 `damage.projectile`、`damage.fall` 等）。
 
-`transform.autoAnchor=true`（默认）在**连接时**根据「宿主玩家当前位置 ↔ Minecraft 玩家当前位置」计算
-一次 Origin；此后 **Origin/Scale/轴映射固定不变**（不会每帧重锚），宿主玩家/相机按该固定映射镜像 MC，
-碰撞体与实体也因此保持正确对齐。设为 `transform.autoAnchor=false` 则使用手动的 `transform.origin*`。
+### 世界映射——两种模式
+
+`MC = (host − origin) * scale`，X 轴翻转。映射是**世界配置**：必须稳定，且**不得**依赖 Minecraft 当前
+存档 / 出生位置。
+
+- **正式模式 —— `transform.autoAnchor=false`（默认）。** 使用显式的 `transform.originX/Y/Z` + `scale` +
+  `flipX`，启动即锁定。加载任何 Minecraft 存档都不会改变它。Origin 必须使 HOF 世界映射到合法的 Minecraft
+  位置——Bootstrap 会把 Minecraft 玩家传送到 `ToMc(HOF 玩家)`，Origin 不对就会落到错误位置。
+- **开发模式 —— `transform.autoAnchor=true`。** 尚无显式映射时：根据当前两名玩家**只计算一次** Origin，
+  随后**锁定并持久化**到 `%LOCALAPPDATA%/CrossMC/howtofish.anchor`。之后绝不重锚（切存档 / 重进 / 重连 /
+  宿主重启都复用该锁定映射）。仅在开发映射阶段使用；正式接入应使用显式映射。
+
+### 玩家生命周期——一次性 Bootstrap
+
+Minecraft 世界/会话加载时，宿主先让 Minecraft 玩家对齐到宿主玩家的**固定**映射位置，然后才进入正常跟随：
+
+```text
+固定 CoordinateMapper ─▶ ToMc(HOF 玩家) ─▶ Minecraft 玩家传送 ─▶ 确认 ─▶ FOLLOW_ACTIVE
+```
+
+Bootstrap 期间 HOF 玩家不动，跟随 / 相机 / Health 循环暂停，因此新加载的存档位置绝不会拖动宿主玩家。确认后
+唯一的同步方向是 **Minecraft → How to Fish**。这是一次性握手（`HostState.BOOTSTRAP` + `teleportSeq` /
+`McState.BOOTSTRAP_DONE`），不是双向玩家同步。`player.bootstrap=false` 可关闭。
 
 ## 线程
 

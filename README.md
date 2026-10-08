@@ -30,6 +30,7 @@ HowToFishMC/
 └─ src/
    ├─ Plugin.cs               BepInEx entry point + host export/damage consumption
    ├─ HostConfig.cs           config + coordinate mapper
+   ├─ MappingStore.cs         persists the fixed world mapping (auto-anchor lock)
    └─ FrameOverlay.cs         draws the Minecraft frame
 ```
 
@@ -89,10 +90,33 @@ player keyboard/mouse ─▶ Minecraft native input ─▶ Minecraft player ─�
 Belongs to this adapter, never to the protocol. Holds the world→MC transform and the damage
 multipliers (`damage.default`, `damage.explosion`, `damage.projectile`, `damage.fall`, ...).
 
-`transform.autoAnchor=true` (default) computes the origin **once at connect** from the two players
-(host player position ↔ Minecraft player position). After that the **origin/scale/axis mapping is
-fixed** (never re-anchored), so the host player/camera mirror Minecraft at a stable mapping and
-colliders/entities stay aligned. Set `transform.autoAnchor=false` to use the manual `transform.origin*`.
+### World mapping — two modes
+
+`MC = (host − origin) * scale`, with the X axis flipped. The mapping is **world configuration**: it
+must be stable and must **not** depend on the current Minecraft save/spawn position.
+
+- **Formal mode — `transform.autoAnchor=false` (default).** The mapping is the explicit
+  `transform.originX/Y/Z` + `scale` + `flipX`, locked at startup. A loaded Minecraft save never
+  changes it. Set the origin so the HOF world maps to a valid Minecraft location; the bootstrap
+  teleports the Minecraft player to `ToMc(HOF player)`, so a wrong origin means a wrong landing spot.
+- **Dev mode — `transform.autoAnchor=true`.** No explicit mapping yet: compute the origin **once**
+  from the current players, then **lock and persist** it to `%LOCALAPPDATA%/CrossMC/howtofish.anchor`.
+  It is never re-anchored afterwards (world change / save reload / reconnect / host restart all reuse
+  the locked mapping). Use only while developing a mapping; formal integration should be explicit.
+
+### Player lifecycle — one-time bootstrap
+
+When a Minecraft world/session loads, the host asks Minecraft to align its player to the host
+avatar's **fixed** mapped position **before** normal following starts:
+
+```text
+fixed CoordinateMapper ─▶ ToMc(HOF player) ─▶ MC player teleport ─▶ confirmed ─▶ FOLLOW_ACTIVE
+```
+
+During the bootstrap the HOF player does not move, and the follow/camera/health loops are paused, so
+a freshly-loaded save position can never drag the host player. After confirmation the only direction
+is **Minecraft → How to Fish**. This is a one-shot handshake (`HostState.BOOTSTRAP` + `teleportSeq` /
+`McState.BOOTSTRAP_DONE`), not a two-way player sync. `player.bootstrap=false` disables it.
 
 ## Threading
 

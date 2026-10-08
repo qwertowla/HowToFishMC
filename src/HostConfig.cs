@@ -41,6 +41,11 @@ namespace CrossMC.HowToFish
         public bool PlayerFollowRotation;
         public bool FollowVitals = true; // Minecraft health/hunger -> host player
 
+        // One-time player bootstrap when a Minecraft world/session loads: the host asks Minecraft to
+        // align its player to the host avatar's mapped position before normal MC -> host following
+        // starts. Generic CrossMC handshake; does NOT re-anchor CoordinateMapper. On by default.
+        public bool PlayerBootstrap = true;
+
         // Debug/verification mode: make the host player a PURE follower — disable the host's own
         // movement simulation / network transform sync and force the position+camera from McState
         // every LateUpdate. Off by default.
@@ -105,8 +110,13 @@ namespace CrossMC.HowToFish
             cfg.PlayerFollow = cfg.GetBool("player.follow", false);
             cfg.PlayerFollowRotation = cfg.GetBool("player.followRotation", false);
             cfg.FollowVitals = cfg.GetBool("player.followVitals", true);
+            cfg.PlayerBootstrap = cfg.GetBool("player.bootstrap", true);
             cfg.FollowHardLock = cfg.GetBool("player.followHardLock", false);
-            cfg.AutoAnchor = cfg.GetBool("transform.autoAnchor", true);
+
+            // FORMAL integration mode uses an EXPLICIT, fixed world mapping (origin/scale/flipX); the
+            // Minecraft save/spawn position must never define the mapping. autoAnchor is a dev-only
+            // convenience (establish once, then locked/persisted). Default false.
+            cfg.AutoAnchor = cfg.GetBool("transform.autoAnchor", false);
             cfg.FollowCamera = cfg.GetBool("camera.follow", true);
             cfg.CameraYawSign = cfg.GetFloat("camera.yawSign", 1f);
             cfg.CameraPitchSign = cfg.GetFloat("camera.pitchSign", 1f);
@@ -137,12 +147,20 @@ namespace CrossMC.HowToFish
             return FindFile() ?? "built-in default";
         }
 
+        /// <summary>The user-level override path (highest priority), whether or not it exists.</summary>
+        public static string UserOverridePath()
+        {
+            string baseDir = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+            return string.IsNullOrEmpty(baseDir) ? null : Path.Combine(baseDir, "CrossMC", "howtofish.properties");
+        }
+
         /// <summary>One-line dump of the effective values (for the startup log).</summary>
         public string Describe()
         {
             return "follow=" + PlayerFollow
                     + " followRotation=" + PlayerFollowRotation
                     + " followVitals=" + FollowVitals
+                    + " bootstrap=" + PlayerBootstrap
                     + " followHardLock=" + FollowHardLock
                     + " camera.follow=" + FollowCamera
                     + " input.capture=" + InputCapture
