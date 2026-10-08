@@ -171,9 +171,33 @@ namespace CrossMC.HowToFish
             {
                 _statusTimer = 2f;
                 long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                Player hp = Player.LocalPlayer;
+                string mcStr = "-";
+
+                if (_memory.McAlive(now))
+                {
+                    try
+                    {
+                        McState m = _memory.ReadMcState();
+                        mcStr = m.X.ToString("F1") + "," + m.Y.ToString("F1") + "," + m.Z.ToString("F1")
+                                + " yaw=" + m.Yaw.ToString("F0") + " pitch=" + m.Pitch.ToString("F0")
+                                + " flags=" + m.Flags;
+                    }
+                    catch (Exception)
+                    {
+                        mcStr = "read-error";
+                    }
+                }
+
                 Logger.LogInfo("CrossMC status: hostAlive=" + _memory.HostAlive(now)
                         + " mcAlive=" + _memory.McAlive(now)
-                        + " inputEvents=" + _inputEvents
+                        + " mcState=(" + mcStr + ")"
+                        + " | hostPlayer=" + (hp ? "ok" : "null")
+                        + " hostTransform=" + (hp && hp.Transform ? "ok" : "null")
+                        + " hostMovement=" + (hp && hp.Movement ? "ok" : "null")
+                        + " hostRigidbody=" + (hp && hp.Rigidbody ? "ok" : "null")
+                        + " hostCamera=" + (hp && hp.CamObject ? "ok" : "null")
+                        + " | anchored=" + _anchored
                         + " follow=" + _config.PlayerFollow
                         + " followSkip=" + _followSkip
                         + " followMoves=" + _followMoves
@@ -201,8 +225,9 @@ namespace CrossMC.HowToFish
             }
 
             Player player = Player.LocalPlayer;
+            Transform camTransform = player && player.CamObject ? player.CamObject : (FindCamera() != null ? FindCamera().transform : null);
 
-            if (!player || !player.CamObject)
+            if (camTransform == null)
             {
                 return;
             }
@@ -225,7 +250,7 @@ namespace CrossMC.HowToFish
 
             float yaw = mc.Yaw * _config.CameraYawSign;
             float pitch = mc.Pitch * _config.CameraPitchSign;
-            player.CamObject.rotation = Quaternion.Euler(pitch, yaw, 0f);
+            camTransform.rotation = Quaternion.Euler(pitch, yaw, 0f);
 
             if (_cameraFollows == 0)
             {
@@ -665,16 +690,43 @@ namespace CrossMC.HowToFish
             }
         }
 
+        private static Camera FindCamera()
+        {
+            Camera[] cams = Camera.allCameras;
+
+            if (cams != null && cams.Length > 0)
+            {
+                return cams[0];
+            }
+
+            return null;
+        }
+
         private void ExportColliders()
         {
             Player player = Player.LocalPlayer;
+            Vector3 center;
 
-            if (!player || !player.Transform)
+            if (player && player.Transform)
             {
-                return;
+                center = player.Transform.position;
+            }
+            else
+            {
+                // No local player yet (lobby): still export around the active camera so the host
+                // world does not vanish just because the player is missing.
+                Camera cam = FindCamera();
+
+                if (cam == null)
+                {
+                    _colliders.Clear();
+                    _memory.WriteColliderTable(_colliders);
+                    return;
+                }
+
+                center = cam.transform.position;
             }
 
-            Vector3 center = player.Transform.position;
             _colliders.Clear();
 
             int count = Physics.OverlapSphereNonAlloc(center, _config.ColliderRadius, _overlapBuffer);
@@ -712,13 +764,9 @@ namespace CrossMC.HowToFish
         private void ExportEntities()
         {
             Player player = Player.LocalPlayer;
+            bool haveCenter = player && player.Transform;
+            Vector3 center = haveCenter ? player.Transform.position : Vector3.zero;
 
-            if (!player || !player.Transform)
-            {
-                return;
-            }
-
-            Vector3 center = player.Transform.position;
             _entities.Clear();
             _crossToCreature.Clear();
 
@@ -732,7 +780,9 @@ namespace CrossMC.HowToFish
                     continue;
                 }
 
-                if (Vector3.Distance(creature.transform.position, center) > _config.EntityRadius)
+                // Without a local player (lobby) skip the proximity filter so host entities still
+                // get exported; with a player, only export nearby ones.
+                if (haveCenter && Vector3.Distance(creature.transform.position, center) > _config.EntityRadius)
                 {
                     continue;
                 }
