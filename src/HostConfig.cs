@@ -219,5 +219,16 @@ namespace CrossMC.HowToFish
                     mc.y / Scale + OriginY,
                     mc.z / Scale + OriginZ);
         }
+
+        /// <summary>
+        /// Linear part only (no origin): a Minecraft-space delta -&gt; host-space delta. Used for
+        /// incremental following, which never applies an absolute coordinate.
+        /// </summary>
+        public Vector3 DeltaToHost(Vector3 mcDelta)
+        {
+            float x = FlipX ? -mcDelta.x : mcDelta.x;
+
+            return new Vector3(x / Scale, mcDelta.y / Scale, mcDelta.z / Scale);
+        }
     }
 }

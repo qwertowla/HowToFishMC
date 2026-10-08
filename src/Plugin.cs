@@ -49,6 +49,14 @@ namespace CrossMC.HowToFish
         private bool _loggedInputUnavailable;
         private bool _anchored;
 
+        // Incremental follow state.
+        private const float ReAnchorDistance = 4f;     // host moved this far without us -> resync
+        private const float McTeleportDistance = 16f;  // ignore MC teleports larger than this
+        private bool _hasLastMc;
+        private Vector3 _lastMc;
+        private bool _hasLastHostSet;
+        private Vector3 _lastHostSet;
+
         private readonly UnityEngine.Collider[] _overlapBuffer = new UnityEngine.Collider[512];
         private readonly List<BridgeCollider> _colliders = new List<BridgeCollider>();
         private readonly List<EntityMap> _entities = new List<EntityMap>();
@@ -376,19 +384,22 @@ namespace CrossMC.HowToFish
         }
 
         /// <summary>
-        /// Minecraft -> host: drive the How to Fish player to follow the authoritative Minecraft
-        /// player (<c>McState</c>) through the coordinate mapper. Enabled by <c>player.follow</c>;
-        /// this only ever writes the HOST transform, never the Minecraft player.
+        /// Minecraft -> host: the How to Fish player follows the authoritative Minecraft player
+        /// (<c>McState</c>) **incrementally**. Each frame we add only the Minecraft player's
+        /// movement delta (mapped to host space) to the host player's *current* position — we never
+        /// write an absolute coordinate, so the host game stays free to place the player (menu,
+        /// rooms, boats) and nothing gets yanked to a foreign position.
         ///
-        /// <p><b>Known limitation:</b> this writes <c>Transform.position</c> directly. How to Fish's
-        /// player is FishNet/Rigidbody-driven, so the game's own movement/network sync may overwrite
-        /// it. The correct long-term entry point (e.g. a network transform / rigidbody move) is not
-        /// yet identified; enable this only for testing and verify whether FishNet overrides it.</p>
+        /// <p>If the host game itself relocates the player (a jump we did not cause), or the
+        /// Minecraft player teleports, we resynchronize and skip that frame instead of propagating
+        /// the jump. Movement goes through the game's own <c>PlayerMovement.Teleport</c>
+        /// (Rigidbody-based), never a raw transform write.</p>
         /// </summary>
         private void FollowMcPlayer()
         {
             if (!_config.PlayerFollow)
             {
+                _hasLastMc = false;
                 return;
             }
 
@@ -396,6 +407,7 @@ namespace CrossMC.HowToFish
 
             if (!_memory.McAlive(now))
             {
+                _hasLastMc = false;
                 return;
             }
 
@@ -403,6 +415,7 @@ namespace CrossMC.HowToFish
 
             if (!player || !player.Transform)
             {
+                _hasLastMc = false;
                 return;
             }
 
@@ -417,29 +430,73 @@ namespace CrossMC.HowToFish
                 return;
             }
 
-            Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
+            if ((mc.Flags & McState.InWorld) == 0)
+            {
+                _hasLastMc = false;
+                return;
+            }
 
-            // Use How to Fish's OWN player-move entry point (it sets Rigidbody.position,
-            // transform.position, MovePosition and zeroes velocity), instead of poking
-            // Transform.position directly — otherwise the Rigidbody/FishNet fight drags the player
-            // to invalid coordinates (e.g. underwater / out of the world).
+            Vector3 mcPos = new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z);
+            Vector3 curHost = player.Transform.position;
+
+            if (!_hasLastMc || !_hasLastHostSet)
+            {
+                _lastMc = mcPos;
+                _lastHostSet = curHost;
+                _hasLastMc = true;
+                _hasLastHostSet = true;
+                return;
+            }
+
+            // The host game moved the player on its own (menu -> room, boat, respawn): resync and
+            // re-anchor the absolute mapper (for colliders/entities) instead of fighting it.
+            if (Vector3.Distance(curHost, _lastHostSet) > ReAnchorDistance)
+            {
+                _lastMc = mcPos;
+                _lastHostSet = curHost;
+                _mapper.Anchor(curHost, mcPos);
+                _anchored = true;
+                Logger.LogInfo("CrossMC: host player relocated by the game; re-anchored and resynced.");
+                return;
+            }
+
+            Vector3 deltaMc = mcPos - _lastMc;
+            _lastMc = mcPos;
+
+            // Ignore a Minecraft-side teleport (do not drag the host player there).
+            if (deltaMc.sqrMagnitude > McTeleportDistance * McTeleportDistance)
+            {
+                return;
+            }
+
+            Vector3 hostDelta = _mapper.DeltaToHost(deltaMc);
+
+            if (hostDelta.sqrMagnitude < 1e-6f)
+            {
+                return;
+            }
+
+            Vector3 target = curHost + hostDelta;
+
             if (player.Movement != null)
             {
-                player.Movement.Teleport(host, true);
+                player.Movement.Teleport(target, true);
             }
             else if (player.Rigidbody != null)
             {
-                player.Rigidbody.position = host;
+                player.Rigidbody.position = target;
             }
-            else if (player.Transform != null)
+            else
             {
-                player.Transform.position = host;
+                player.Transform.position = target;
             }
+
+            _lastHostSet = target;
 
             if (_followMoves == 0)
             {
-                Logger.LogInfo("CrossMC: following McState -> host player (first move to "
-                        + host.x.ToString("F2") + "," + host.y.ToString("F2") + "," + host.z.ToString("F2")
+                Logger.LogInfo("CrossMC: following McState -> host player incrementally (first delta "
+                        + hostDelta.x.ToString("F2") + "," + hostDelta.y.ToString("F2") + "," + hostDelta.z.ToString("F2")
                         + ") via PlayerMovement.Teleport.");
             }
 

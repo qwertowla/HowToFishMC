@@ -99,6 +99,8 @@ thread-agnostic.
 - Collider export uses `Physics.OverlapSphereNonAlloc` AABBs; rotation is ignored.
 - Overlay is IMGUI, not a URP `CommandBuffer`.
 - Server-side proxy entities require an integrated server (singleplayer/LAN).
-- Host-player follow is **opt-in** (`player.follow`) and uses the game's own `PlayerMovement.Teleport`
-  (Rigidbody-based, not a raw `Transform` write). It runs every frame, so FishNet/server correction
-  may still fight it — not yet verified in game.
+- Host-player follow is **opt-in** (`player.follow`) and **incremental**: it applies only the
+  Minecraft player's movement delta to the host player's current position (never an absolute
+  coordinate), through the game's own `PlayerMovement.Teleport` (Rigidbody-based). If the host game
+  relocates the player (menu → room) it resyncs and re-anchors instead of fighting it. FishNet/
+  server correction may still interfere — not yet verified in game.
