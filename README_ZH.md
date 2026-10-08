@@ -93,7 +93,8 @@ dotnet build -c Release
 - Collider 导出使用 `Physics.OverlapSphereNonAlloc` 的 AABB，忽略旋转。
 - 叠加层目前是 IMGUI，不是 URP 的 `CommandBuffer`。
 - 服务端代理实体需要集成服务端（单机 / 局域网）。
-- 宿主玩家跟随是**可选项**（`player.follow`），且是**增量式**：只把 MC 玩家的位移增量加到宿主玩家
-  当前位置上（绝不用绝对坐标），并通过游戏自带的 `PlayerMovement.Teleport`（基于 Rigidbody）执行。
-  若游戏自己挪动了玩家（菜单→房间），会重新同步并重锚，而不是与之对抗。FishNet / 服务端校正仍可能干扰——
-  尚未实机验证。
+- 宿主玩家跟随是**可选项**（`player.follow`）。正式 follower 会“接管”宿主玩家（它是权威 MC 玩家的
+  **表现**）：禁用本地 `PlayerMovement`、把 `Rigidbody` 设为 kinematic、禁用 FishNet 变换同步，然后在
+  `LateUpdate` 把玩家放到 `McState` 经固定 `CoordinateMapper` 映射的位置（相机同理）；关闭跟随时恢复。
+  `player.followHardLock`（默认 `false`）是调试/应急后备，会额外按名称禁用同步组件。移动 / 视角 /
+  Health 已实机验证。

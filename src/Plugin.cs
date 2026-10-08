@@ -65,8 +65,11 @@ namespace CrossMC.HowToFish
         private bool _hasPendingCam;
         private Vector3 _pendingCamRequested;
         private long _cameraLogCounter;
-        private bool _hardLockApplied;
-        private Player _hardLockPlayer;
+        private Player _followerPlayer;
+        private bool _followerTookOver;
+        private bool _savedMovementEnabled;
+        private bool _savedKinematic;
+        private bool _savedUseGravity;
         private string _localPlayerSource = "-";
 
 
@@ -154,10 +157,11 @@ namespace CrossMC.HowToFish
                 Logger.LogError("CrossMC input capture failed: " + e);
             }
 
-            // Minecraft -> host: make the How to Fish player follow the authoritative McState.
+            // Minecraft -> host: diagnose McState + mirror health/hunger. Position/camera follow runs
+            // in LateUpdate (see FollowerLateUpdate), after the host's own movement pass.
             try
             {
-                FollowMcPlayer();
+                DiagnoseMc();
                 FollowVitals();
             }
             catch (Exception e)
@@ -274,35 +278,77 @@ namespace CrossMC.HowToFish
         }
 
         /// <summary>
-        /// Debug/verification mode: turn the How to Fish player into a PURE follower. Disables the
-        /// host's own movement simulation and any transform-sync components so nothing overwrites the
-        /// position we set from McState. Called once per local player.
+        /// Formal player follower takeover. The host player is a REPRESENTATION of the authoritative
+        /// Minecraft player, so we stop the host's own movement authority for that player:
+        ///   - disable <c>PlayerMovement</c> (the local movement simulation),
+        ///   - make the <c>Rigidbody</c> kinematic (no physics),
+        ///   - disable any FishNet transform sync on this player (typed, not by name).
+        /// Everything is saved and restored when follow is turned off. This is the minimal, stable set
+        /// that actually owns the position in this build (verified at runtime). <c>player.followHardLock</c>
+        /// only adds an aggressive fallback scan if the formal takeover is ever insufficient.
         /// </summary>
-        private void ApplyHardLockOnce(Player player)
+        private void EnsureFollowerTakeover(Player player)
         {
-            if (_hardLockApplied && _hardLockPlayer == player)
+            if (_followerPlayer != player)
             {
-                return;
+                RestoreFollower();
+                _followerPlayer = player;
+                _followerTookOver = false;
             }
 
-            _hardLockApplied = true;
-            _hardLockPlayer = player;
-            Logger.LogInfo("CrossMC hardlock: applying to host player (pure follower)");
-
-            if (player.Movement != null)
+            if (!_followerTookOver)
             {
-                player.Movement.enabled = false;
-                Logger.LogInfo("CrossMC hardlock: disabled PlayerMovement");
+                _followerTookOver = true;
+
+                if (player.Movement != null)
+                {
+                    _savedMovementEnabled = player.Movement.enabled;
+                    player.Movement.enabled = false;
+                }
+
+                if (player.Rigidbody != null)
+                {
+                    _savedKinematic = player.Rigidbody.isKinematic;
+                    _savedUseGravity = player.Rigidbody.useGravity;
+                    player.Rigidbody.isKinematic = true;
+                    player.Rigidbody.useGravity = false;
+                    player.Rigidbody.linearVelocity = Vector3.zero;
+                }
+
+                DisableTransformSync(player);
+                Logger.LogInfo("CrossMC follower: took over host player (PlayerMovement off, Rigidbody kinematic)");
             }
 
-            if (player.Rigidbody != null)
+            if (_config.FollowHardLock)
             {
-                player.Rigidbody.isKinematic = true;
-                player.Rigidbody.useGravity = false;
-                player.Rigidbody.linearVelocity = Vector3.zero;
-                Logger.LogInfo("CrossMC hardlock: Rigidbody -> kinematic, gravity off");
+                AggressiveDisable(player);
+            }
+        }
+
+        /// <summary>Disable FishNet transform-sync components on the player (typed, not by name).</summary>
+        private static void DisableTransformSync(Player player)
+        {
+            foreach (FishNet.Component.Transforming.NetworkTransform nt
+                    in player.GetComponentsInChildren<FishNet.Component.Transforming.NetworkTransform>(true))
+            {
+                if (nt != null)
+                {
+                    nt.enabled = false;
+                }
             }
 
+            foreach (RigidbodySync rs in player.GetComponentsInChildren<RigidbodySync>(true))
+            {
+                if (rs != null)
+                {
+                    rs.enabled = false;
+                }
+            }
+        }
+
+        /// <summary>Emergency fallback (hardlock): blanket-disable anything that looks like a sync component.</summary>
+        private void AggressiveDisable(Player player)
+        {
             foreach (MonoBehaviour mb in player.GetComponentsInChildren<MonoBehaviour>(true))
             {
                 if (mb == null)
@@ -315,20 +361,55 @@ namespace CrossMC.HowToFish
                 if (n.Contains("NetworkTransform") || n.Contains("RigidbodySync")
                         || n.Contains("NetworkTickSmoother") || n.Contains("Prediction"))
                 {
-                    mb.enabled = false;
-                    Logger.LogInfo("CrossMC hardlock: disabled " + n);
+                    if (mb.enabled)
+                    {
+                        mb.enabled = false;
+                        Logger.LogInfo("CrossMC hardlock: disabled " + n);
+                    }
                 }
             }
         }
 
-        /// <summary>
-        /// Hard-lock follower update: force the host player position and camera straight from McState
-        /// in LateUpdate (after the game's own Update/FixedUpdate pass), so nothing re-applies an old
-        /// position for the rendered frame.
-        /// </summary>
-        private void HardLockLateUpdate()
+        private void RestoreFollower()
         {
-            if (!_config.FollowHardLock || _memory == null)
+            if (!_followerTookOver || _followerPlayer == null)
+            {
+                return;
+            }
+
+            Player p = _followerPlayer;
+
+            if (p.Movement != null)
+            {
+                p.Movement.enabled = _savedMovementEnabled;
+            }
+
+            if (p.Rigidbody != null)
+            {
+                p.Rigidbody.isKinematic = _savedKinematic;
+                p.Rigidbody.useGravity = _savedUseGravity;
+            }
+
+            _followerTookOver = false;
+            _followerPlayer = null;
+        }
+
+        /// <summary>
+        /// Formal follower update (LateUpdate, after the host's own movement pass): place the host
+        /// player at the fixed CoordinateMapper position of the authoritative McState and mirror the
+        /// camera. This is the Minecraft -> How to Fish chain; it never writes to Minecraft.
+        /// </summary>
+        private void FollowerLateUpdate()
+        {
+            if (!_config.PlayerFollow)
+            {
+                RestoreFollower();
+                _followState = "DISABLED";
+                _followSkip = "off";
+                return;
+            }
+
+            if (_memory == null)
             {
                 return;
             }
@@ -337,13 +418,18 @@ namespace CrossMC.HowToFish
 
             if (!player || !player.Transform)
             {
+                _followState = "NO_HOST_PLAYER";
+                _followSkip = player ? "host player transform is null" : "Player.LocalPlayer is null";
                 return;
             }
 
-            ApplyHardLockOnce(player);
+            DumpComponentsOnce(player);
+            EnsureFollowerTakeover(player);
 
             if (!_memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
             {
+                _followState = "NO_MC";
+                _followSkip = "mcAlive=false (Minecraft not publishing)";
                 return;
             }
 
@@ -355,15 +441,30 @@ namespace CrossMC.HowToFish
             }
             catch (Exception)
             {
+                _followState = "NO_MC";
                 return;
             }
 
             if ((mc.Flags & McState.InWorld) == 0)
             {
+                _followState = "NO_MC_WORLD";
+                _followSkip = "MC not in world (flags=" + mc.Flags + ")";
                 return;
             }
 
+            _followSkip = "ok";
             Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
+
+            if (_hasPendingFollow)
+            {
+                float err = Vector3.Distance(HostPos(player), _pendingFollowTarget);
+                _followState = err > 0.1f ? "OVERRIDDEN_NEXT_FRAME" : "APPLIED";
+                _hasPendingFollow = false;
+            }
+            else
+            {
+                _followState = "APPLIED";
+            }
 
             if (player.Rigidbody != null)
             {
@@ -378,10 +479,14 @@ namespace CrossMC.HowToFish
                         mc.Pitch * _config.CameraPitchSign, mc.Yaw * _config.CameraYawSign, 0f);
             }
 
-            if (_followMoves == 0)
+            _pendingFollowTarget = host;
+            _hasPendingFollow = true;
+
+            if (++_followLogCounter % 60 == 1)
             {
-                Logger.LogInfo("CrossMC hardlock: forcing host player to " + host.x.ToString("F1")
-                        + "," + host.y.ToString("F1") + "," + host.z.ToString("F1"));
+                Logger.LogInfo("CrossMC follower: MC=(" + mc.X.ToString("F1") + "," + mc.Y.ToString("F1") + "," + mc.Z.ToString("F1")
+                        + ") -> Host=(" + host.x.ToString("F1") + "," + host.y.ToString("F1") + "," + host.z.ToString("F1")
+                        + ") nextState=" + _followState + " hardlock=" + _config.FollowHardLock);
             }
 
             _followMoves++;
@@ -394,7 +499,7 @@ namespace CrossMC.HowToFish
         /// </summary>
         private void LateUpdate()
         {
-            HardLockLateUpdate();
+            FollowerLateUpdate();
 
             if (_memory == null || !_config.FollowCamera)
             {
@@ -880,117 +985,23 @@ namespace CrossMC.HowToFish
         }
 
         /// <summary>
-        /// Minecraft -> host: the How to Fish player is the *representation* of the authoritative
-        /// Minecraft player. Its position is the fixed coordinate mapping of <c>McState</c> (the
-        /// origin is computed once, then constant) — no per-frame re-anchoring. Movement goes through
-        /// the game's own <c>PlayerMovement.Teleport</c> (Rigidbody-based), not a raw transform write.
+        /// Reads McState each frame for diagnostics (change tracking + validity). The actual position
+        /// follow happens in LateUpdate (see FollowerLateUpdate); this never writes to Minecraft.
         /// </summary>
-        private void FollowMcPlayer()
+        private void DiagnoseMc()
         {
-            if (!_config.PlayerFollow)
+            if (_memory == null || !_memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
             {
-                _followState = "DISABLED";
-                _followSkip = "off";
                 return;
             }
-
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-
-            if (!_memory.McAlive(now))
-            {
-                _followState = "NO_MC";
-                _followSkip = "mcAlive=false (Minecraft not publishing)";
-                return;
-            }
-
-            Player player = FindLocalPlayer();
-
-            if (!player)
-            {
-                _followState = "NO_HOST_PLAYER";
-                _followSkip = "Player.LocalPlayer is null";
-                return;
-            }
-
-            if (!player.Transform)
-            {
-                _followState = "NO_TRANSFORM";
-                _followSkip = "host player transform is null";
-                return;
-            }
-
-            DumpComponentsOnce(player);
-
-            McState mc;
 
             try
             {
-                mc = _memory.ReadMcState();
+                LogMcChange(_memory.ReadMcState());
             }
             catch (Exception)
             {
-                _followState = "NO_MC";
-                _followSkip = "McState read error";
-                return;
-            }
-
-            LogMcChange(mc);
-
-            if ((mc.Flags & McState.InWorld) == 0)
-            {
-                _followState = "NO_MC_WORLD";
-                _followSkip = "MC not in world (flags=" + mc.Flags + ")";
-                return;
-            }
-
-            // Did last frame's requested position survive? (only meaningful if we wrote one)
-            if (_hasPendingFollow)
-            {
-                Vector3 actual = HostPos(player);
-                float err = Vector3.Distance(actual, _pendingFollowTarget);
-                _followState = err > 0.1f ? "OVERRIDDEN_NEXT_FRAME" : "APPLIED";
-                _hasPendingFollow = false;
-            }
-
-            _followSkip = "ok";
-            Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
-            Vector3 before = HostPos(player);
-            string method;
-
-            if (player.Movement != null)
-            {
-                player.Movement.Teleport(host, true);
-                method = "PlayerMovement.Teleport";
-            }
-            else if (player.Rigidbody != null)
-            {
-                player.Rigidbody.position = host;
-                method = "Rigidbody.position";
-            }
-            else
-            {
-                player.Transform.position = host;
-                method = "Transform.position";
-            }
-
-            Vector3 after = HostPos(player);
-            _pendingFollowTarget = host;
-            _hasPendingFollow = true;
-
-            if (++_followLogCounter % 30 == 1)
-            {
-                Logger.LogInfo("CrossMC follow: MC=(" + mc.X.ToString("F1") + "," + mc.Y.ToString("F1") + "," + mc.Z.ToString("F1")
-                        + ") HostTarget=(" + host.x.ToString("F1") + "," + host.y.ToString("F1") + "," + host.z.ToString("F1")
-                        + ") HostBefore=(" + before.x.ToString("F1") + "," + before.y.ToString("F1") + "," + before.z.ToString("F1")
-                        + ") HostAfter=(" + after.x.ToString("F1") + "," + after.y.ToString("F1") + "," + after.z.ToString("F1")
-                        + ") method=" + method + " nextState=" + _followState);
-            }
-
-            _followMoves++;
-
-            if (_config.PlayerFollowRotation)
-            {
-                player.Transform.rotation = Quaternion.Euler(mc.Pitch, mc.Yaw, 0f);
+                // ignore
             }
         }
 
