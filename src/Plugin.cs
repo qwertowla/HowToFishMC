@@ -57,7 +57,8 @@ namespace CrossMC.HowToFish
 
         // One-time player bootstrap (see UpdatePlayerBootstrap). _bootConfirmed gates the normal
         // MC -> host follow so a freshly-loaded Minecraft player can never pull the host player.
-        private bool _bootConfirmed = true;
+        // Defaults to FALSE: the follower stays gated until a bootstrap is explicitly confirmed.
+        private bool _bootConfirmed;
         private string _bootState = "OFF";
         private int _bootSeq;
         private int _bootSeqCounter;
@@ -185,7 +186,14 @@ namespace CrossMC.HowToFish
             // One-time player bootstrap: while a Minecraft world is loading we must NOT let the
             // freshly-loaded Minecraft player drive the host follower. Compute/confirm the
             // alignment first; PublishHostEnvironment advertises the bootstrap target to Minecraft.
-            UpdatePlayerBootstrap();
+            try
+            {
+                UpdatePlayerBootstrap();
+            }
+            catch (Exception e)
+            {
+                Logger.LogError("CrossMC bootstrap update failed: " + e);
+            }
 
             PublishHostEnvironment();
 
