@@ -49,6 +49,8 @@ namespace CrossMC.HowToFish
         private bool _loggedInputUnavailable;
         private bool _anchored;
         private long _cameraFollows;
+        private string _followSkip = "off";
+        private bool _lastMcAlive;
 
 
 
@@ -153,6 +155,16 @@ namespace CrossMC.HowToFish
 
             ApplyDamage();
 
+            bool mcAlive = _memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+            if (mcAlive != _lastMcAlive)
+            {
+                _lastMcAlive = mcAlive;
+                Logger.LogInfo("CrossMC: Minecraft " + (mcAlive
+                        ? "connected (publishing McState)"
+                        : "not publishing / disconnected (start Minecraft and load a world)"));
+            }
+
             _statusTimer -= dt;
 
             if (_statusTimer <= 0f)
@@ -163,7 +175,9 @@ namespace CrossMC.HowToFish
                         + " mcAlive=" + _memory.McAlive(now)
                         + " inputEvents=" + _inputEvents
                         + " follow=" + _config.PlayerFollow
+                        + " followSkip=" + _followSkip
                         + " followMoves=" + _followMoves
+                        + " cameraFollows=" + _cameraFollows
                         + " entities=" + _entities.Count
                         + " colliders=" + _colliders.Count);
             }
@@ -512,6 +526,7 @@ namespace CrossMC.HowToFish
         {
             if (!_config.PlayerFollow)
             {
+                _followSkip = "off";
                 return;
             }
 
@@ -519,13 +534,21 @@ namespace CrossMC.HowToFish
 
             if (!_memory.McAlive(now))
             {
+                _followSkip = "mcAlive=false (Minecraft not publishing)";
                 return;
             }
 
             Player player = Player.LocalPlayer;
 
-            if (!player || !player.Transform)
+            if (!player)
             {
+                _followSkip = "Player.LocalPlayer is null (How to Fish not in a room yet)";
+                return;
+            }
+
+            if (!player.Transform)
+            {
+                _followSkip = "host player transform is null";
                 return;
             }
 
@@ -537,14 +560,17 @@ namespace CrossMC.HowToFish
             }
             catch (Exception)
             {
+                _followSkip = "McState read error";
                 return;
             }
 
             if ((mc.Flags & McState.InWorld) == 0)
             {
+                _followSkip = "MC not in world (flags=" + mc.Flags + ")";
                 return;
             }
 
+            _followSkip = "ok";
             Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
 
             if (player.Movement != null)
