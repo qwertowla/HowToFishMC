@@ -43,6 +43,10 @@ namespace CrossMC.HowToFish
 
         private float _colliderTimer;
         private float _entityTimer;
+        private float _statusTimer = 2f;
+        private long _inputEvents;
+        private long _followMoves;
+        private bool _loggedInputUnavailable;
 
         private readonly UnityEngine.Collider[] _overlapBuffer = new UnityEngine.Collider[512];
         private readonly List<BridgeCollider> _colliders = new List<BridgeCollider>();
@@ -102,10 +106,24 @@ namespace CrossMC.HowToFish
             PublishHostEnvironment();
 
             // Host -> Minecraft: capture keyboard/mouse and forward as InputRing events.
-            CaptureInput();
+            try
+            {
+                CaptureInput();
+            }
+            catch (Exception e)
+            {
+                Logger.LogError("CrossMC input capture failed: " + e);
+            }
 
             // Minecraft -> host: make the How to Fish player follow the authoritative McState.
-            FollowMcPlayer();
+            try
+            {
+                FollowMcPlayer();
+            }
+            catch (Exception e)
+            {
+                Logger.LogError("CrossMC follow failed: " + e);
+            }
 
             float dt = Time.deltaTime;
             _colliderTimer -= dt;
@@ -125,6 +143,21 @@ namespace CrossMC.HowToFish
             }
 
             ApplyDamage();
+
+            _statusTimer -= dt;
+
+            if (_statusTimer <= 0f)
+            {
+                _statusTimer = 2f;
+                long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                Logger.LogInfo("CrossMC status: hostAlive=" + _memory.HostAlive(now)
+                        + " mcAlive=" + _memory.McAlive(now)
+                        + " inputEvents=" + _inputEvents
+                        + " follow=" + _config.PlayerFollow
+                        + " followMoves=" + _followMoves
+                        + " entities=" + _entities.Count
+                        + " colliders=" + _colliders.Count);
+            }
         }
 
         /// <summary>
@@ -176,6 +209,19 @@ namespace CrossMC.HowToFish
 
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             Keyboard keyboard = Keyboard.current;
+            Mouse mouseDevice = Mouse.current;
+
+            if (keyboard == null && mouseDevice == null)
+            {
+                if (!_loggedInputUnavailable)
+                {
+                    _loggedInputUnavailable = true;
+                    Logger.LogWarning("CrossMC: Unity Input System reports no Keyboard/Mouse device. "
+                            + "Host input will not be captured (is How to Fish focused / using the new Input System?).");
+                }
+
+                return;
+            }
 
             if (keyboard != null)
             {
@@ -202,7 +248,7 @@ namespace CrossMC.HowToFish
                 }
             }
 
-            Mouse mouse = Mouse.current;
+            Mouse mouse = mouseDevice;
 
             if (mouse != null)
             {
@@ -241,6 +287,13 @@ namespace CrossMC.HowToFish
 
         private void PushInput(int type, int code, int a, int b, long now)
         {
+            if (_inputEvents == 0)
+            {
+                Logger.LogInfo("CrossMC: capturing input (first event type=" + type + " code=" + code
+                        + "). NOTE: How to Fish must be the focused window for input to be captured.");
+            }
+
+            _inputEvents++;
             _memory.PushInput(new InputEvent { Type = type, Code = code, A = a, B = b, TimestampMs = now });
         }
 
@@ -311,6 +364,15 @@ namespace CrossMC.HowToFish
 
             Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
             player.Transform.position = host;
+
+            if (_followMoves == 0)
+            {
+                Logger.LogInfo("CrossMC: following McState -> host player (first move to "
+                        + host.x.ToString("F2") + "," + host.y.ToString("F2") + "," + host.z.ToString("F2")
+                        + "). If FishNet/Rigidbody overrides this, the transform write may not stick.");
+            }
+
+            _followMoves++;
 
             if (_config.PlayerFollowRotation)
             {
