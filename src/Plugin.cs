@@ -65,6 +65,8 @@ namespace CrossMC.HowToFish
         private bool _hasPendingCam;
         private Vector3 _pendingCamRequested;
         private long _cameraLogCounter;
+        private bool _hardLockApplied;
+        private Player _hardLockPlayer;
 
 
 
@@ -226,12 +228,128 @@ namespace CrossMC.HowToFish
         }
 
         /// <summary>
+        /// Debug/verification mode: turn the How to Fish player into a PURE follower. Disables the
+        /// host's own movement simulation and any transform-sync components so nothing overwrites the
+        /// position we set from McState. Called once per local player.
+        /// </summary>
+        private void ApplyHardLockOnce(Player player)
+        {
+            if (_hardLockApplied && _hardLockPlayer == player)
+            {
+                return;
+            }
+
+            _hardLockApplied = true;
+            _hardLockPlayer = player;
+            Logger.LogInfo("CrossMC hardlock: applying to host player (pure follower)");
+
+            if (player.Movement != null)
+            {
+                player.Movement.enabled = false;
+                Logger.LogInfo("CrossMC hardlock: disabled PlayerMovement");
+            }
+
+            if (player.Rigidbody != null)
+            {
+                player.Rigidbody.isKinematic = true;
+                player.Rigidbody.useGravity = false;
+                player.Rigidbody.linearVelocity = Vector3.zero;
+                Logger.LogInfo("CrossMC hardlock: Rigidbody -> kinematic, gravity off");
+            }
+
+            foreach (MonoBehaviour mb in player.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (mb == null)
+                {
+                    continue;
+                }
+
+                string n = mb.GetType().Name;
+
+                if (n.Contains("NetworkTransform") || n.Contains("RigidbodySync")
+                        || n.Contains("NetworkTickSmoother") || n.Contains("Prediction"))
+                {
+                    mb.enabled = false;
+                    Logger.LogInfo("CrossMC hardlock: disabled " + n);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Hard-lock follower update: force the host player position and camera straight from McState
+        /// in LateUpdate (after the game's own Update/FixedUpdate pass), so nothing re-applies an old
+        /// position for the rendered frame.
+        /// </summary>
+        private void HardLockLateUpdate()
+        {
+            if (!_config.FollowHardLock || _memory == null)
+            {
+                return;
+            }
+
+            Player player = Player.LocalPlayer;
+
+            if (!player || !player.Transform)
+            {
+                return;
+            }
+
+            ApplyHardLockOnce(player);
+
+            if (!_memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
+            {
+                return;
+            }
+
+            McState mc;
+
+            try
+            {
+                mc = _memory.ReadMcState();
+            }
+            catch (Exception)
+            {
+                return;
+            }
+
+            if ((mc.Flags & McState.InWorld) == 0)
+            {
+                return;
+            }
+
+            Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
+
+            if (player.Rigidbody != null)
+            {
+                player.Rigidbody.position = host;
+            }
+
+            player.Transform.position = host;
+
+            if (player.CamObject != null)
+            {
+                player.CamObject.rotation = Quaternion.Euler(
+                        mc.Pitch * _config.CameraPitchSign, mc.Yaw * _config.CameraYawSign, 0f);
+            }
+
+            if (_followMoves == 0)
+            {
+                Logger.LogInfo("CrossMC hardlock: forcing host player to " + host.x.ToString("F1")
+                        + "," + host.y.ToString("F1") + "," + host.z.ToString("F1"));
+            }
+
+            _followMoves++;
+        }
+
+        /// <summary>
         /// Host camera follows the Minecraft player's view (McState yaw/pitch). Runs in LateUpdate so
         /// it wins over the game's own camera update for the rendered frame; the host camera remains
         /// purely a follower (Minecraft is the view authority).
         /// </summary>
         private void LateUpdate()
         {
+            HardLockLateUpdate();
+
             if (_memory == null || !_config.FollowCamera)
             {
                 _cameraState = "DISABLED";

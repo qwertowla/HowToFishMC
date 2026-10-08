@@ -41,6 +41,11 @@ namespace CrossMC.HowToFish
         public bool PlayerFollowRotation;
         public bool FollowVitals = true; // Minecraft health/hunger -> host player
 
+        // Debug/verification mode: make the host player a PURE follower — disable the host's own
+        // movement simulation / network transform sync and force the position+camera from McState
+        // every LateUpdate. Off by default.
+        public bool FollowHardLock;
+
         // Host camera follows the Minecraft player's view (McState yaw/pitch). Independent of
         // position follow. Signs let you calibrate handedness (Unity left-handed vs MC).
         public bool FollowCamera = true;
@@ -100,6 +105,7 @@ namespace CrossMC.HowToFish
             cfg.PlayerFollow = cfg.GetBool("player.follow", false);
             cfg.PlayerFollowRotation = cfg.GetBool("player.followRotation", false);
             cfg.FollowVitals = cfg.GetBool("player.followVitals", true);
+            cfg.FollowHardLock = cfg.GetBool("player.followHardLock", false);
             cfg.AutoAnchor = cfg.GetBool("transform.autoAnchor", true);
             cfg.FollowCamera = cfg.GetBool("camera.follow", true);
             cfg.CameraYawSign = cfg.GetFloat("camera.yawSign", 1f);
@@ -137,6 +143,7 @@ namespace CrossMC.HowToFish
             return "follow=" + PlayerFollow
                     + " followRotation=" + PlayerFollowRotation
                     + " followVitals=" + FollowVitals
+                    + " followHardLock=" + FollowHardLock
                     + " camera.follow=" + FollowCamera
                     + " input.capture=" + InputCapture
                     + " autoAnchor=" + AutoAnchor
