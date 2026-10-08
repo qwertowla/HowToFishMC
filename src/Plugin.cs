@@ -156,6 +156,12 @@ namespace CrossMC.HowToFish
                 _overlay = go.AddComponent<FrameOverlay>();
                 _overlay.Init(_memory, _config);
 
+                // Host -> Minecraft video: capture the How to Fish camera into the CrossMC host frame.
+                var exporter = go.AddComponent<HostFrameExporter>();
+                exporter.Init(_memory, _config);
+                Logger.LogInfo("CrossMC HostFrame exporter " + (_config.RenderEnabled ? "enabled" : "disabled")
+                        + " (" + _config.RenderWidth + "x" + _config.RenderHeight + "@" + _config.RenderFps + "fps)");
+
                 Logger.LogInfo("CrossMC host ready. bridgeConfig=" + global::CrossMC.Bridge.Config.ConfigSource()
                         + " hostConfig=" + HostConfig.ConfigSource());
             }

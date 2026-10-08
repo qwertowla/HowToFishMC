@@ -31,6 +31,7 @@ HowToFishMC/
    ├─ Plugin.cs               BepInEx entry point + host export/damage consumption
    ├─ HostConfig.cs           config + coordinate mapper
    ├─ MappingStore.cs         persists the fixed world mapping (auto-anchor lock)
+   ├─ HostFrameExporter.cs    captures the game camera into the CrossMC host frame
    └─ FrameOverlay.cs         draws the Minecraft frame
 ```
 
@@ -50,6 +51,10 @@ Install into `...\How to Fish\BepInEx\plugins\` together with CrossMC's `CrossMC
 ## What it does
 
 - **Frame** — reads the newest Minecraft frame from shared memory and draws it as a screen rectangle.
+- **Host frame** (`render.enabled`) — captures the How to Fish camera into the CrossMC host-frame
+  channel (via a private `RenderTexture` + `AsyncGPUReadback`) so Minecraft can draw it as a
+  world-space quad. Resolution/FPS are configurable (`render.width`/`height`/`fps`, default
+  1280×720 @ 15). The game's own camera is never retargeted.
 - **Environment** — publishes the host environment/avatar as `HostState` (viewport, camera mode;
   informational only — Minecraft is authoritative for the player).
 - **Input (generic, off by default)** — the user plays Minecraft with Minecraft's own input; this

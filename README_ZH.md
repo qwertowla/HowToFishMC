@@ -28,6 +28,7 @@ HowToFishMC/
    ├─ Plugin.cs               BepInEx 入口 + 宿主导出 / 伤害消费
    ├─ HostConfig.cs           配置 + 坐标映射
    ├─ MappingStore.cs         持久化固定世界映射（auto-anchor 锁定）
+   ├─ HostFrameExporter.cs    抓取游戏相机到 CrossMC host frame
    └─ FrameOverlay.cs         绘制 Minecraft 画面
 ```
 
@@ -46,6 +47,9 @@ dotnet build -c Release
 ## 功能
 
 - **画面**——从共享内存读取最新的 Minecraft 帧，作为屏幕矩形绘制。
+- **宿主帧**（`render.enabled`）——把 How to Fish 相机抓取到 CrossMC host-frame 通道（私有
+  `RenderTexture` + `AsyncGPUReadback`），供 Minecraft 作为世界空间面片绘制。分辨率/帧率可配
+  （`render.width`/`height`/`fps`，默认 1280×720 @ 15）。**不会**改动游戏自身相机。
 - **环境**——发布宿主环境 / 表现为 `HostState`（视口、相机模式；仅信息性——玩家权威在 Minecraft）。
 - **输入（通用，默认关闭）**——玩家用 Minecraft 自己的输入游玩；本适配器不驱动玩家。`input.capture`
   （默认 `false`）可选地把宿主键鼠经 `InputRing` 转发（通用能力；Minecraft 会注入自身的

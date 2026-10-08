@@ -26,6 +26,13 @@ namespace CrossMC.HowToFish
         public float EntityRadius = 64f;
         public float EntityInterval = 0.05f; // ~20 Hz entity position update
 
+        // Host -> Minecraft video: capture the How to Fish camera into the CrossMC host frame.
+        public bool RenderEnabled = true;
+        public int RenderWidth = 1280;
+        public int RenderHeight = 720;
+        public int RenderFps = 15;
+        public bool RenderAsync = true; // AsyncGPUReadback (preferred); false = synchronous fallback
+
         public float OverlayX = 0.05f;
         public float OverlayY = 0.05f;
         public float OverlayWidth = 0.35f;
@@ -101,6 +108,12 @@ namespace CrossMC.HowToFish
             cfg.EntityRadius = cfg.GetFloat("entity.radius", 64f);
             cfg.EntityInterval = cfg.GetFloat("entity.interval", 0.05f);
 
+            cfg.RenderEnabled = cfg.GetBool("render.enabled", true);
+            cfg.RenderWidth = (int)cfg.GetFloat("render.width", 1280f);
+            cfg.RenderHeight = (int)cfg.GetFloat("render.height", 720f);
+            cfg.RenderFps = (int)cfg.GetFloat("render.fps", 15f);
+            cfg.RenderAsync = cfg.GetBool("render.async", true);
+
             cfg.OverlayX = cfg.GetFloat("overlay.x", 0.05f);
             cfg.OverlayY = cfg.GetFloat("overlay.y", 0.05f);
             cfg.OverlayWidth = cfg.GetFloat("overlay.width", 0.35f);
@@ -164,6 +177,7 @@ namespace CrossMC.HowToFish
                     + " followHardLock=" + FollowHardLock
                     + " camera.follow=" + FollowCamera
                     + " input.capture=" + InputCapture
+                    + " render=" + RenderEnabled + "(" + RenderWidth + "x" + RenderHeight + "@" + RenderFps + "fps async=" + RenderAsync + ")"
                     + " autoAnchor=" + AutoAnchor
                     + " origin=(" + OriginX + "," + OriginY + "," + OriginZ + ")"
                     + " scale=" + Scale
