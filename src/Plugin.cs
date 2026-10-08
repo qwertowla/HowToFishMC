@@ -200,6 +200,13 @@ namespace CrossMC.HowToFish
                 return;
             }
 
+            // Only anchor once the Minecraft player actually exists in a world, otherwise we'd
+            // anchor against a default (0,0,0) sample and shift the host player later.
+            if ((mc.Flags & McState.InWorld) == 0)
+            {
+                return;
+            }
+
             Vector3 hp = player.Transform.position;
             _mapper.Anchor(hp, new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
             _anchored = true;
@@ -411,13 +418,29 @@ namespace CrossMC.HowToFish
             }
 
             Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
-            player.Transform.position = host;
+
+            // Use How to Fish's OWN player-move entry point (it sets Rigidbody.position,
+            // transform.position, MovePosition and zeroes velocity), instead of poking
+            // Transform.position directly — otherwise the Rigidbody/FishNet fight drags the player
+            // to invalid coordinates (e.g. underwater / out of the world).
+            if (player.Movement != null)
+            {
+                player.Movement.Teleport(host, true);
+            }
+            else if (player.Rigidbody != null)
+            {
+                player.Rigidbody.position = host;
+            }
+            else if (player.Transform != null)
+            {
+                player.Transform.position = host;
+            }
 
             if (_followMoves == 0)
             {
                 Logger.LogInfo("CrossMC: following McState -> host player (first move to "
                         + host.x.ToString("F2") + "," + host.y.ToString("F2") + "," + host.z.ToString("F2")
-                        + "). If FishNet/Rigidbody overrides this, the transform write may not stick.");
+                        + ") via PlayerMovement.Teleport.");
             }
 
             _followMoves++;

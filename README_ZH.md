@@ -87,3 +87,5 @@ Minecraft 玩家当前位置——之后宿主 ⇄ MC 只做相对移动，**两
 - Collider 导出使用 `Physics.OverlapSphereNonAlloc` 的 AABB，忽略旋转。
 - 叠加层目前是 IMGUI，不是 URP 的 `CommandBuffer`。
 - 服务端代理实体需要集成服务端（单机 / 局域网）。
+- 宿主玩家跟随是**可选项**（`player.follow`），使用游戏自带的 `PlayerMovement.Teleport`（基于
+  Rigidbody，而不是直接写 `Transform`）。它每帧执行，FishNet / 服务端校正仍可能与之冲突——尚未实机验证。
