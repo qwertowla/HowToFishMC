@@ -185,14 +185,20 @@ namespace CrossMC.HowToFish
                 {
                     KeyControl key = keys[i];
 
-                    if (key.wasPressedThisFrame)
+                    if (!key.wasPressedThisFrame && !key.wasReleasedThisFrame)
                     {
-                        PushInput(BridgeProtocol.InputKeyDown, (int)key.keyCode, 0, 0, now);
+                        continue;
                     }
-                    else if (key.wasReleasedThisFrame)
+
+                    int semantic = SemanticKey(key.keyCode);
+
+                    if (semantic == 0)
                     {
-                        PushInput(BridgeProtocol.InputKeyUp, (int)key.keyCode, 0, 0, now);
+                        continue; // unmapped key — not forwarded
                     }
+
+                    PushInput(key.wasPressedThisFrame ? BridgeProtocol.InputKeyDown : BridgeProtocol.InputKeyUp,
+                            semantic, 0, 0, now);
                 }
             }
 
@@ -239,9 +245,37 @@ namespace CrossMC.HowToFish
         }
 
         /// <summary>
+        /// Maps a Unity Input System key to a CrossMC keyboard semantic ({@code CROSSMC_KEY_*},
+        /// 0 = not forwarded). This is the explicit Unity Key -> CrossMC -> Minecraft KeyBinding
+        /// mapping; the wire format never carries a raw engine key code.
+        /// </summary>
+        private static int SemanticKey(Key key)
+        {
+            switch (key)
+            {
+                case Key.W: return BridgeProtocol.KeyForward;
+                case Key.S: return BridgeProtocol.KeyBack;
+                case Key.A: return BridgeProtocol.KeyLeft;
+                case Key.D: return BridgeProtocol.KeyRight;
+                case Key.Space: return BridgeProtocol.KeyJump;
+                case Key.LeftShift: return BridgeProtocol.KeySneak;
+                case Key.LeftCtrl: return BridgeProtocol.KeySprint;
+                case Key.E: return BridgeProtocol.KeyInventory;
+                case Key.Q: return BridgeProtocol.KeyDrop;
+                case Key.F: return BridgeProtocol.KeySwapHands;
+                default: return 0;
+            }
+        }
+
+        /// <summary>
         /// Minecraft -> host: drive the How to Fish player to follow the authoritative Minecraft
         /// player (<c>McState</c>) through the coordinate mapper. Enabled by <c>player.follow</c>;
         /// this only ever writes the HOST transform, never the Minecraft player.
+        ///
+        /// <p><b>Known limitation:</b> this writes <c>Transform.position</c> directly. How to Fish's
+        /// player is FishNet/Rigidbody-driven, so the game's own movement/network sync may overwrite
+        /// it. The correct long-term entry point (e.g. a network transform / rigidbody move) is not
+        /// yet identified; enable this only for testing and verify whether FishNet overrides it.</p>
         /// </summary>
         private void FollowMcPlayer()
         {
