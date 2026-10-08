@@ -52,6 +52,20 @@ namespace CrossMC.HowToFish
         private string _followSkip = "off";
         private bool _lastMcAlive;
 
+        // Diagnostics: requested -> applied -> survived-next-frame
+        private string _followState = "INIT";
+        private string _cameraState = "INIT";
+        private bool _dumpedComponents;
+        private long _lastMcLogMs;
+        private double _lastMcX, _lastMcY, _lastMcZ, _lastMcYaw, _lastMcPitch;
+        private long _lastMcFrames = -1;
+        private bool _hasPendingFollow;
+        private Vector3 _pendingFollowTarget;
+        private long _followLogCounter;
+        private bool _hasPendingCam;
+        private Vector3 _pendingCamRequested;
+        private long _cameraLogCounter;
+
 
 
         private readonly UnityEngine.Collider[] _overlapBuffer = new UnityEngine.Collider[512];
@@ -92,7 +106,9 @@ namespace CrossMC.HowToFish
                 _overlay = go.AddComponent<FrameOverlay>();
                 _overlay.Init(_memory, _config);
 
-                Logger.LogInfo("CrossMC host ready. config=" + global::CrossMC.Bridge.Config.ConfigSource());
+                Logger.LogInfo("CrossMC host ready. bridgeConfig=" + global::CrossMC.Bridge.Config.ConfigSource()
+                        + " hostConfig=" + HostConfig.ConfigSource());
+                Logger.LogInfo("CrossMC effective config: " + _config.Describe());
             }
             catch (Exception e)
             {
@@ -199,8 +215,10 @@ namespace CrossMC.HowToFish
                         + " hostCamera=" + (hp && hp.CamObject ? "ok" : "null")
                         + " | anchored=" + _anchored
                         + " follow=" + _config.PlayerFollow
+                        + " followState=" + _followState
                         + " followSkip=" + _followSkip
                         + " followMoves=" + _followMoves
+                        + " cameraState=" + _cameraState
                         + " cameraFollows=" + _cameraFollows
                         + " entities=" + _entities.Count
                         + " colliders=" + _colliders.Count);
@@ -216,19 +234,24 @@ namespace CrossMC.HowToFish
         {
             if (_memory == null || !_config.FollowCamera)
             {
+                _cameraState = "DISABLED";
                 return;
             }
 
             if (!_memory.McAlive(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()))
             {
+                _cameraState = "NO_MC";
                 return;
             }
 
             Player player = Player.LocalPlayer;
-            Transform camTransform = player && player.CamObject ? player.CamObject : (FindCamera() != null ? FindCamera().transform : null);
+            Transform camTransform = player && player.CamObject
+                    ? player.CamObject
+                    : (FindCamera() != null ? FindCamera().transform : null);
 
             if (camTransform == null)
             {
+                _cameraState = "NO_CAMERA";
                 return;
             }
 
@@ -240,23 +263,38 @@ namespace CrossMC.HowToFish
             }
             catch (Exception)
             {
+                _cameraState = "NO_MC";
                 return;
             }
 
             if ((mc.Flags & McState.InWorld) == 0)
             {
+                _cameraState = "NO_MC_WORLD";
                 return;
+            }
+
+            // Did last frame's requested camera rotation survive?
+            if (_hasPendingCam)
+            {
+                float err = Quaternion.Angle(camTransform.rotation, Quaternion.Euler(_pendingCamRequested));
+                _cameraState = err > 2f ? "OVERRIDDEN" : "APPLIED";
+                _hasPendingCam = false;
             }
 
             float yaw = mc.Yaw * _config.CameraYawSign;
             float pitch = mc.Pitch * _config.CameraPitchSign;
+            Vector3 camBefore = camTransform.eulerAngles;
             camTransform.rotation = Quaternion.Euler(pitch, yaw, 0f);
+            Vector3 camAfter = camTransform.eulerAngles;
+            _pendingCamRequested = new Vector3(pitch, yaw, 0f);
+            _hasPendingCam = true;
 
-            if (_cameraFollows == 0)
+            if (++_cameraLogCounter % 30 == 1)
             {
-                Logger.LogInfo("CrossMC: camera follow active (yawSign=" + _config.CameraYawSign
-                        + " pitchSign=" + _config.CameraPitchSign
-                        + "). Flip the signs in host.properties if the view is mirrored/inverted.");
+                Logger.LogInfo("CrossMC camera: mcYaw=" + mc.Yaw.ToString("F0") + " mcPitch=" + mc.Pitch.ToString("F0")
+                        + " requested=(" + pitch.ToString("F0") + "," + yaw.ToString("F0") + ")"
+                        + " camBefore=" + camBefore.ToString("F0") + " camAfter=" + camAfter.ToString("F0")
+                        + " nextState=" + _cameraState);
             }
 
             _cameraFollows++;
@@ -541,6 +579,93 @@ namespace CrossMC.HowToFish
             }
         }
 
+        private static Vector3 HostPos(Player player)
+        {
+            if (player.Rigidbody != null)
+            {
+                return player.Rigidbody.position;
+            }
+
+            return player.Transform != null ? player.Transform.position : Vector3.zero;
+        }
+
+        private void DumpComponentsOnce(Player player)
+        {
+            if (_dumpedComponents)
+            {
+                return;
+            }
+
+            _dumpedComponents = true;
+            var sb = new System.Text.StringBuilder("CrossMC: local player found. owner=");
+            sb.Append(player.NetworkObject != null ? player.NetworkObject.IsOwner.ToString() : "?");
+            sb.Append(" server=").Append(player.NetworkObject != null ? player.NetworkObject.IsServerInitialized.ToString() : "?");
+            sb.Append(" components=[");
+
+            foreach (Component c in player.GetComponents<Component>())
+            {
+                if (c != null)
+                {
+                    sb.Append(c.GetType().Name).Append(',');
+                }
+            }
+
+            sb.Append(']');
+
+            if (player.Rigidbody != null)
+            {
+                sb.Append(" rb.isKinematic=").Append(player.Rigidbody.isKinematic);
+                sb.Append(" rb.interpolation=").Append(player.Rigidbody.interpolation);
+            }
+
+            Logger.LogInfo(sb.ToString());
+
+            var c2 = new System.Text.StringBuilder("CrossMC: player children: ");
+            Transform t = player.transform;
+
+            for (int i = 0; i < t.childCount; i++)
+            {
+                Transform ch = t.GetChild(i);
+                c2.Append('[').Append(ch.name).Append(':');
+
+                foreach (Component c in ch.GetComponents<Component>())
+                {
+                    if (c != null)
+                    {
+                        c2.Append(c.GetType().Name).Append(',');
+                    }
+                }
+
+                c2.Append("] ");
+            }
+
+            Logger.LogInfo(c2.ToString());
+        }
+
+        private void LogMcChange(McState mc)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            if (now - _lastMcLogMs < 1000)
+            {
+                return;
+            }
+
+            _lastMcLogMs = now;
+            bool changed = mc.X != _lastMcX || mc.Y != _lastMcY || mc.Z != _lastMcZ
+                    || mc.Yaw != _lastMcYaw || mc.Pitch != _lastMcPitch || mc.FrameCounter != _lastMcFrames;
+            Logger.LogInfo("CrossMC mcState: x=" + mc.X.ToString("F2") + " y=" + mc.Y.ToString("F2") + " z=" + mc.Z.ToString("F2")
+                    + " yaw=" + mc.Yaw.ToString("F1") + " pitch=" + mc.Pitch.ToString("F1")
+                    + " health=" + mc.Health + " hunger=" + mc.Hunger
+                    + " ts=" + mc.TimestampMs + " frame=" + mc.FrameCounter + " changed=" + changed);
+            _lastMcX = mc.X;
+            _lastMcY = mc.Y;
+            _lastMcZ = mc.Z;
+            _lastMcYaw = mc.Yaw;
+            _lastMcPitch = mc.Pitch;
+            _lastMcFrames = mc.FrameCounter;
+        }
+
         /// <summary>
         /// Minecraft -> host: the How to Fish player is the *representation* of the authoritative
         /// Minecraft player. Its position is the fixed coordinate mapping of <c>McState</c> (the
@@ -551,6 +676,7 @@ namespace CrossMC.HowToFish
         {
             if (!_config.PlayerFollow)
             {
+                _followState = "DISABLED";
                 _followSkip = "off";
                 return;
             }
@@ -559,6 +685,7 @@ namespace CrossMC.HowToFish
 
             if (!_memory.McAlive(now))
             {
+                _followState = "NO_MC";
                 _followSkip = "mcAlive=false (Minecraft not publishing)";
                 return;
             }
@@ -567,15 +694,19 @@ namespace CrossMC.HowToFish
 
             if (!player)
             {
-                _followSkip = "Player.LocalPlayer is null (How to Fish not in a room yet)";
+                _followState = "NO_HOST_PLAYER";
+                _followSkip = "Player.LocalPlayer is null";
                 return;
             }
 
             if (!player.Transform)
             {
+                _followState = "NO_TRANSFORM";
                 _followSkip = "host player transform is null";
                 return;
             }
+
+            DumpComponentsOnce(player);
 
             McState mc;
 
@@ -585,37 +716,61 @@ namespace CrossMC.HowToFish
             }
             catch (Exception)
             {
+                _followState = "NO_MC";
                 _followSkip = "McState read error";
                 return;
             }
 
+            LogMcChange(mc);
+
             if ((mc.Flags & McState.InWorld) == 0)
             {
+                _followState = "NO_MC_WORLD";
                 _followSkip = "MC not in world (flags=" + mc.Flags + ")";
                 return;
             }
 
+            // Did last frame's requested position survive? (only meaningful if we wrote one)
+            if (_hasPendingFollow)
+            {
+                Vector3 actual = HostPos(player);
+                float err = Vector3.Distance(actual, _pendingFollowTarget);
+                _followState = err > 0.1f ? "OVERRIDDEN_NEXT_FRAME" : "APPLIED";
+                _hasPendingFollow = false;
+            }
+
             _followSkip = "ok";
             Vector3 host = _mapper.ToHost(new Vector3((float)mc.X, (float)mc.Y, (float)mc.Z));
+            Vector3 before = HostPos(player);
+            string method;
 
             if (player.Movement != null)
             {
                 player.Movement.Teleport(host, true);
+                method = "PlayerMovement.Teleport";
             }
             else if (player.Rigidbody != null)
             {
                 player.Rigidbody.position = host;
+                method = "Rigidbody.position";
             }
             else
             {
                 player.Transform.position = host;
+                method = "Transform.position";
             }
 
-            if (_followMoves == 0)
+            Vector3 after = HostPos(player);
+            _pendingFollowTarget = host;
+            _hasPendingFollow = true;
+
+            if (++_followLogCounter % 30 == 1)
             {
-                Logger.LogInfo("CrossMC: following McState -> host player (fixed origin) at "
-                        + host.x.ToString("F2") + "," + host.y.ToString("F2") + "," + host.z.ToString("F2")
-                        + " via PlayerMovement.Teleport.");
+                Logger.LogInfo("CrossMC follow: MC=(" + mc.X.ToString("F1") + "," + mc.Y.ToString("F1") + "," + mc.Z.ToString("F1")
+                        + ") HostTarget=(" + host.x.ToString("F1") + "," + host.y.ToString("F1") + "," + host.z.ToString("F1")
+                        + ") HostBefore=(" + before.x.ToString("F1") + "," + before.y.ToString("F1") + "," + before.z.ToString("F1")
+                        + ") HostAfter=(" + after.x.ToString("F1") + "," + after.y.ToString("F1") + "," + after.z.ToString("F1")
+                        + ") method=" + method + " nextState=" + _followState);
             }
 
             _followMoves++;

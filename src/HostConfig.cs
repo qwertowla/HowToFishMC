@@ -125,6 +125,27 @@ namespace CrossMC.HowToFish
             return GetFloat(key, GetFloat("damage.default", 1f));
         }
 
+        /// <summary>The config file actually used, or "built-in default".</summary>
+        public static string ConfigSource()
+        {
+            return FindFile() ?? "built-in default";
+        }
+
+        /// <summary>One-line dump of the effective values (for the startup log).</summary>
+        public string Describe()
+        {
+            return "follow=" + PlayerFollow
+                    + " followRotation=" + PlayerFollowRotation
+                    + " followVitals=" + FollowVitals
+                    + " camera.follow=" + FollowCamera
+                    + " input.capture=" + InputCapture
+                    + " autoAnchor=" + AutoAnchor
+                    + " origin=(" + OriginX + "," + OriginY + "," + OriginZ + ")"
+                    + " scale=" + Scale
+                    + " flipX=" + FlipX
+                    + " camSigns=(" + CameraYawSign + "," + CameraPitchSign + ")";
+        }
+
         private float GetFloat(string key, float fallback)
         {
             return _values.TryGetValue(key, out string v)
