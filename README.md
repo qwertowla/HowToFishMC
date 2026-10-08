@@ -1,15 +1,17 @@
 # HowToFishMC
 
+[中文](README_ZH.md) | **English**
+
 The **How to Fish** host adapter for [CrossMC](../CrossMC) — a standalone BepInEx plugin that makes
 *How to Fish* (Unity 6 / Mono / FishNet / BepInEx 5) the first game bridged to Minecraft.
 
-> **Status: work in progress.** Builds with `dotnet build`; runtime behaviour not yet verified in
-> game. See the framework's `docs/VERIFICATION.md`.
+> ⚠️ **Work in progress.** Builds with `dotnet build`; runtime behaviour is not yet verified in game.
+> See the framework's `docs/VERIFICATION.md`.
 
 This is an **independent repository**. All game-independent logic (the shared-memory protocol, the
-C#/Java bindings, the Minecraft mod) lives in the **CrossMC** repository. This repo only contains the
-How to Fish-specific half: opening the mapping, the frame overlay, the host player/collider/entity
-export and applying Minecraft damage with How to Fish's own multipliers.
+C#/Java bindings, the Minecraft mod) lives in the **CrossMC** repository. This repo contains only the
+How to Fish-specific half: opening the mapping, the frame overlay, publishing the host player,
+colliders and entities, and applying Minecraft damage with How to Fish's own multipliers.
 
 ```text
 CrossMC/        generic framework (protocol + bindings + Minecraft mod)   ← sibling repo
@@ -26,7 +28,7 @@ HowToFishMC/
 ├─ CrossMC.HowToFish.csproj   builds the plugin; references ../CrossMC/bindings/csharp
 ├─ host.properties            this adapter's config (damage multipliers, world→MC transform)
 └─ src/
-   ├─ Plugin.cs               BepInEx entry point
+   ├─ Plugin.cs               BepInEx entry point + host export/damage consumption
    ├─ HostConfig.cs           config + coordinate mapper
    └─ FrameOverlay.cs         draws the Minecraft frame
 ```
@@ -46,13 +48,18 @@ Install into `...\How to Fish\BepInEx\plugins\` together with CrossMC's `CrossMC
 
 ## What it does
 
-- Frame: reads the newest Minecraft frame from shared memory and draws it as a screen rectangle.
-- State: publishes the host player/camera (`HostState`).
-- Collision: publishes host world collider AABBs so Minecraft can build collision proxies.
-- Entities: publishes host creatures with a stable CrossMC `CrossEntityId` (mapped from the
-  host-native `NetworkObject.ObjectId`) as proxy entities.
-- Damage: consumes Minecraft's native damage events and applies `host.properties` multipliers to
-  the mapped host entity / local player.
+- **Frame** — reads the newest Minecraft frame from shared memory and draws it as a screen rectangle.
+- **State** — publishes the host player/camera as `HostState`.
+- **Collision** — publishes host world collider AABBs so Minecraft can build collision proxies.
+- **Entities** — publishes host creatures with a stable CrossMC **`CrossEntityId`** (mapped from the
+  host-native `NetworkObject.ObjectId`) so Minecraft can spawn proxy entities.
+- **Damage** — consumes Minecraft's native damage events (keyed by `CrossEntityId`) and applies
+  `host.properties` multipliers to the mapped host entity / local player.
+
+## Configuration (`host.properties`)
+
+Belongs to this adapter, never to the protocol. Holds the world→MC transform and the damage
+multipliers (`damage.default`, `damage.explosion`, `damage.projectile`, `damage.fall`, ...).
 
 ## Threading
 
