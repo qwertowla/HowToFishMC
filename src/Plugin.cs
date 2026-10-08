@@ -65,6 +65,9 @@ namespace CrossMC.HowToFish
         private bool _hasPendingCam;
         private Vector3 _pendingCamRequested;
         private long _cameraLogCounter;
+        private int _colDetected;
+        private int _colPlayerSkipped;
+        private int _colExported;
         private Player _followerPlayer;
         private bool _followerTookOver;
         private bool _savedMovementEnabled;
@@ -273,7 +276,8 @@ namespace CrossMC.HowToFish
                         + " cameraState=" + _cameraState
                         + " cameraFollows=" + _cameraFollows
                         + " entities=" + _entities.Count
-                        + " colliders=" + _colliders.Count);
+                        + " colliders=" + _colliders.Count
+                        + " (detected=" + _colDetected + " playerSkipped=" + _colPlayerSkipped + " exported=" + _colExported + ")");
             }
         }
 
@@ -958,6 +962,34 @@ namespace CrossMC.HowToFish
             }
 
             Logger.LogInfo(c2.ToString());
+
+            var c3 = new System.Text.StringBuilder("CrossMC: player colliders: ");
+
+            foreach (UnityEngine.Collider col in player.GetComponentsInChildren<UnityEngine.Collider>(true))
+            {
+                if (col == null)
+                {
+                    continue;
+                }
+
+                c3.Append('[').Append(Path(col.transform)).Append(':').Append(col.GetType().Name);
+                c3.Append(col.isTrigger ? "/trigger" : "").Append("] ");
+            }
+
+            Logger.LogInfo(c3.ToString());
+        }
+
+        private static string Path(Transform t)
+        {
+            var sb = new System.Text.StringBuilder(t.name);
+
+            while (t.parent != null)
+            {
+                t = t.parent;
+                sb.Insert(0, t.name + "/");
+            }
+
+            return sb.ToString();
         }
 
         private void LogMcChange(McState mc)
@@ -1084,11 +1116,13 @@ namespace CrossMC.HowToFish
         private void ExportColliders()
         {
             Player player = FindLocalPlayer();
+            Transform playerTf = player && player.Transform ? player.Transform : null;
+            Rigidbody playerRb = player ? player.Rigidbody : null;
             Vector3 center;
 
-            if (player && player.Transform)
+            if (playerTf != null)
             {
-                center = player.Transform.position;
+                center = playerTf.position;
             }
             else
             {
@@ -1100,6 +1134,9 @@ namespace CrossMC.HowToFish
                 {
                     _colliders.Clear();
                     _memory.WriteColliderTable(_colliders);
+                    _colDetected = 0;
+                    _colPlayerSkipped = 0;
+                    _colExported = 0;
                     return;
                 }
 
@@ -1110,6 +1147,7 @@ namespace CrossMC.HowToFish
 
             int count = Physics.OverlapSphereNonAlloc(center, _config.ColliderRadius, _overlapBuffer);
             int id = 1;
+            int skipped = 0;
 
             for (int i = 0; i < count && _colliders.Count < _config.ColliderMax; i++)
             {
@@ -1117,6 +1155,16 @@ namespace CrossMC.HowToFish
 
                 if (col == null || col.isTrigger)
                 {
+                    continue;
+                }
+
+                // The local host player is the follower representation of the Minecraft player; its
+                // own body colliders must NOT become Minecraft world obstacles. Exclude the player's
+                // whole hierarchy and anything sharing the player's Rigidbody. Other colliders
+                // (monsters, NPCs, interactables, buildings) are still exported.
+                if (IsLocalPlayerCollider(col, playerTf, playerRb))
+                {
+                    skipped++;
                     continue;
                 }
 
@@ -1137,7 +1185,31 @@ namespace CrossMC.HowToFish
                 });
             }
 
+            _colDetected = count;
+            _colPlayerSkipped = skipped;
+            _colExported = _colliders.Count;
             _memory.WriteColliderTable(_colliders);
+        }
+
+        /** True when a collider belongs to the local host player (its hierarchy or Rigidbody). */
+        private static bool IsLocalPlayerCollider(UnityEngine.Collider col, Transform playerTf, Rigidbody playerRb)
+        {
+            if (playerRb != null && col.attachedRigidbody == playerRb)
+            {
+                return true;
+            }
+
+            if (playerTf != null)
+            {
+                Transform t = col.transform;
+
+                if (t == playerTf || t.IsChildOf(playerTf))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private void ExportEntities()
